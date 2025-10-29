@@ -37,18 +37,25 @@ struct Config {
   
   // Chamber Light Brightness
   int chamber_pwm_brightness = 100; // 0-100%
+  // NEW: Chamber light finish timeout
+  bool chamber_light_finish_timeout = true; 
 
   // LED Status Colors (stored as 0xRRGGBB)
   uint32_t led_color_idle = 0x000000; // Black (off)
   uint32_t led_color_print = 0xFFFFFF; // White
   uint32_t led_color_pause = 0xFFA500; // Orange
   uint32_t led_color_error = 0xFF0000; // Red
+  uint32_t led_color_finish = 0x00FF00; // Green
 
   // LED Status Brightness (0-255)
   int led_bright_idle = 0;     // Off
   int led_bright_print = 100;  // Medium
   int led_bright_pause = 100;  // Medium
   int led_bright_error = 150;  // Bright
+  int led_bright_finish = 100; // Medium
+
+  // LED Finish timeout toggle
+  bool led_finish_timeout = true; // Enable 2-min timeout by default
 };
 Config config;
 
@@ -60,14 +67,20 @@ char custom_invert_param[2] = "0"; // "1" for true, "0" for false
 char custom_pin_param[5] = "27"; 
 char custom_num_leds_param[5] = "10"; 
 char custom_chamber_bright_param[5] = "100";
+// NEW: Chamber light finish timeout param
+char custom_chamber_finish_timeout_param[2] = "1";
+// LED Params
 char custom_idle_color_param[7] = "000000";
 char custom_print_color_param[7] = "FFFFFF";
 char custom_pause_color_param[7] = "FFA500";
 char custom_error_color_param[7] = "FF0000";
+char custom_finish_color_param[7] = "00FF00"; 
 char custom_idle_bright_param[5] = "0";
 char custom_print_bright_param[5] = "100";
 char custom_pause_bright_param[5] = "100";
 char custom_error_bright_param[5] = "150";
+char custom_finish_bright_param[5] = "100"; 
+char custom_led_finish_timeout_param[2] = "1"; // "1" for true, "0" for false
 
 
 // --- MQTT & JSON Globals ---
@@ -82,6 +95,7 @@ String mqtt_topic_status;
 // --- Status & Web Server Globals ---
 WebServer server(80);
 String current_light_mode = "UNKNOWN"; // Bambu's internal light status
+bool manual_light_control = false; // Flag for manual override
 // LED Globals
 CRGB leds[MAX_LEDS]; // Array to hold LED color values
 int current_print_percentage = 0;
@@ -91,6 +105,10 @@ String current_gcode_state = "IDLE";
 // --- Non-blocking Reconnect Timer ---
 unsigned long lastReconnectAttempt = 0;
 const unsigned long RECONNECT_INTERVAL = 5000; // 5 seconds
+
+// --- Print Finish Timer ---
+unsigned long finishTime = 0; // Timestamp (ms) when print finished
+const unsigned long FINISH_LIGHT_TIMEOUT = 120000; // 2 minutes in ms
 
 // --- Function Prototypes ---
 void setup_mqtt_params();
@@ -103,7 +121,11 @@ bool isValidGpioPin(int pin);
 void handleRoot();
 void update_leds(); 
 void setup_chamber_light_pwm(int pin);
-void setup_ota(); // New function for OTA
+void setup_ota(); 
+void set_chamber_light_state(bool lightShouldBeOn); 
+void handleLightOn();  
+void handleLightOff(); 
+void handleLightAuto(); 
 
 // -----------------------------------------------------
 
@@ -133,7 +155,6 @@ void setup() {
   // 2. Load Configuration
   if (!loadConfig()) {
     Serial.println("No saved configuration found. Using hardcoded defaults.");
-    // Load hardcoded defaults for core values
     strcpy(config.bbl_ip, "192.168.1.100"); 
     strcpy(config.bbl_serial, "012345678900000"); 
     strcpy(config.bbl_access_code, "AABBCCDD");
@@ -172,16 +193,21 @@ void setup() {
   strcpy(custom_code_param, config.bbl_access_code);
   strcpy(custom_invert_param, config.invert_output ? "1" : "0");
   snprintf(custom_pin_param, 5, "%d", config.chamber_light_pin); 
-  snprintf(custom_num_leds_param, 5, "%d", config.num_leds);
   snprintf(custom_chamber_bright_param, 5, "%d", config.chamber_pwm_brightness);
+  strcpy(custom_chamber_finish_timeout_param, config.chamber_light_finish_timeout ? "1" : "0"); // NEW
+  // LED Params
+  snprintf(custom_num_leds_param, 5, "%d", config.num_leds);
   snprintf(custom_idle_color_param, 7, "%06X", config.led_color_idle);
   snprintf(custom_print_color_param, 7, "%06X", config.led_color_print);
   snprintf(custom_pause_color_param, 7, "%06X", config.led_color_pause);
   snprintf(custom_error_color_param, 7, "%06X", config.led_color_error);
+  snprintf(custom_finish_color_param, 7, "%06X", config.led_color_finish); 
   snprintf(custom_idle_bright_param, 5, "%d", config.led_bright_idle);
   snprintf(custom_print_bright_param, 5, "%d", config.led_bright_print);
   snprintf(custom_pause_bright_param, 5, "%d", config.led_bright_pause);
   snprintf(custom_error_bright_param, 5, "%d", config.led_bright_error);
+  snprintf(custom_finish_bright_param, 5, "%d", config.led_bright_finish); 
+  strcpy(custom_led_finish_timeout_param, config.led_finish_timeout ? "1" : "0"); 
 
 
   // 6. Setup WiFiManager
@@ -203,6 +229,7 @@ void setup() {
   WiFiManagerParameter custom_bbl_pin("lightpin", "External Light GPIO Pin", custom_pin_param, 5, "type='number' min='0' max='39'");
   WiFiManagerParameter custom_bbl_invert("invert", "Invert Light Logic (1=Active Low)", custom_invert_param, 2, "type='checkbox' value='1'");
   WiFiManagerParameter custom_chamber_bright("chamber_bright", "External Light Brightness (0-100%)", custom_chamber_bright_param, 5, "type='number' min='0' max='100'");
+  WiFiManagerParameter custom_chamber_finish_timeout("chamber_timeout", "Enable 2-Min Finish Timeout (Light OFF)", custom_chamber_finish_timeout_param, 2, "type='checkbox' value='1'"); // NEW
 
   WiFiManagerParameter p_led_heading("<h2>LED Status Bar Settings</h2>");
   WiFiManagerParameter custom_num_leds("numleds", "Number of WS2812B LEDs (Max 60)", custom_num_leds_param, 5, "type='number' min='0' max='60'");
@@ -224,6 +251,11 @@ void setup() {
   WiFiManagerParameter custom_error_color("error_color", "Error Color (RRGGBB)", custom_error_color_param, 7, "placeholder='FF0000'");
   WiFiManagerParameter custom_error_bright("error_bright", "Error Brightness (0-255)", custom_error_bright_param, 5, "type='number' min='0' max='255'");
 
+  WiFiManagerParameter p_led_finish_heading("<h3>Finish Status</h3>");
+  WiFiManagerParameter custom_finish_color("finish_color", "Finish Color (RRGGBB)", custom_finish_color_param, 7, "placeholder='00FF00'");
+  WiFiManagerParameter custom_finish_bright("finish_bright", "Finish Brightness (0-255)", custom_finish_bright_param, 5, "type='number' min='0' max='255'");
+  WiFiManagerParameter custom_led_finish_timeout("led_finish_timeout", "Enable 2-Min Finish Timeout (LEDs)", custom_led_finish_timeout_param, 2, "type='checkbox' value='1'"); 
+
 
   wm.addParameter(&custom_bbl_ip);
   wm.addParameter(&custom_bbl_serial);
@@ -232,6 +264,7 @@ void setup() {
   wm.addParameter(&custom_bbl_pin); 
   wm.addParameter(&custom_bbl_invert);
   wm.addParameter(&custom_chamber_bright);
+  wm.addParameter(&custom_chamber_finish_timeout); // NEW
   wm.addParameter(&p_led_heading);
   wm.addParameter(&custom_num_leds); 
   wm.addParameter(&p_led_info);
@@ -247,6 +280,10 @@ void setup() {
   wm.addParameter(&p_led_error_heading);
   wm.addParameter(&custom_error_color);
   wm.addParameter(&custom_error_bright);
+  wm.addParameter(&p_led_finish_heading); 
+  wm.addParameter(&custom_finish_color); 
+  wm.addParameter(&custom_finish_bright); 
+  wm.addParameter(&custom_led_finish_timeout); 
 
   
   Serial.println("Starting WiFiManager...");
@@ -279,6 +316,9 @@ void setup() {
   
   // 11. Setup Web Server
   server.on("/", handleRoot);
+  server.on("/light/on", handleLightOn);   
+  server.on("/light/off", handleLightOff); 
+  server.on("/light/auto", handleLightAuto); 
   server.begin();
   Serial.print("Status page available at http://");
   Serial.println(WiFi.localIP());
@@ -291,8 +331,8 @@ void loop() {
   // Handle web client requests
   server.handleClient();
   
+  // --- Non-blocking MQTT reconnect ---
   if (!client.connected()) {
-    // Non-blocking reconnect attempt
     if (millis() - lastReconnectAttempt > RECONNECT_INTERVAL) {
       lastReconnectAttempt = millis();
       if (reconnect_mqtt()) {
@@ -302,25 +342,44 @@ void loop() {
   } else {
     client.loop();
   }
+
+  // --- NEW: Non-blocking Timer Logic for External Light ---
+  // This runs continuously, even without new MQTT messages
+  if (!manual_light_control && config.chamber_light_finish_timeout && 
+      current_gcode_state == "FINISH" && finishTime > 0 && 
+      (millis() - finishTime > FINISH_LIGHT_TIMEOUT)) {
+      
+      // Check if light is already off to avoid unnecessary writes
+      int pwm_duty = ledcRead(config.chamber_light_pin);
+      bool is_on = (config.invert_output) ? (pwm_duty < 255) : (pwm_duty > 0);
+      if (is_on) {
+          Serial.println("External Light: Finish timeout reached. Turning OFF.");
+          set_chamber_light_state(false); // Turn light OFF
+      }
+  }
+
+  // --- NEW: Non-blocking Timer Logic for LEDs ---
+  // This ensures LEDs turn off even if no new MQTT message arrives
+  if (config.led_finish_timeout && current_gcode_state == "FINISH" && 
+      finishTime > 0 && (millis() - finishTime > FINISH_LIGHT_TIMEOUT)) {
+      
+      // Check if LEDs are already idle to avoid unnecessary updates
+      if (FastLED.getBrightness() != config.led_bright_idle || leds[0].r != (config.led_color_idle >> 16 & 0xFF)) {
+          Serial.println("LED Strip: Finish timeout reached. Reverting to IDLE.");
+          update_leds(); // This will now fall through to the IDLE state
+      }
+  }
 }
 
 // -----------------------------------------------------
 // --- OTA Setup Function ---
 
-/**
- * @brief Initializes the ArduinoOTA service with LED feedback.
- */
 void setup_ota() {
-  // Set a hostname for the device
   ArduinoOTA.setHostname("bambu-light-controller");
   
-  // (Optional) You can set a password for updates
-  // ArduinoOTA.setPassword("your_ota_password");
-
   ArduinoOTA
     .onStart([]() {
       Serial.println("OTA Start");
-      // Use the "Error" brightness and color for visibility
       FastLED.setBrightness(config.led_bright_error); 
       fill_solid(leds, config.num_leds, CRGB::Blue);
       FastLED.show();
@@ -329,12 +388,10 @@ void setup_ota() {
       Serial.println("\nOTA End");
       fill_solid(leds, config.num_leds, CRGB::Green);
       FastLED.show();
-      delay(1000); // Show success
+      delay(1000);
     })
     .onProgress([](unsigned int progress, unsigned int total) {
       Serial.printf("OTA Progress: %u%%\r", (progress / (total / 100)));
-      
-      // Update LED progress bar
       int leds_to_light = map(progress, 0, total, 0, config.num_leds);
       fill_solid(leds, leds_to_light, CRGB::Blue);
       fill_solid(leds + leds_to_light, config.num_leds - leds_to_light, CRGB::Black);
@@ -348,9 +405,9 @@ void setup_ota() {
       else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
       else if (error == OTA_END_ERROR) Serial.println("End Failed");
       
-      fill_solid(leds, config.num_leds, CRGB::Red); // Show Red on error
+      fill_solid(leds, config.num_leds, CRGB::Red); 
       FastLED.show();
-      delay(2000); // Show error
+      delay(2000);
     });
 
   ArduinoOTA.begin();
@@ -373,17 +430,42 @@ void handleRoot() {
   bool is_on = (config.invert_output) ? (pwm_duty < 255) : (pwm_duty > 0);
   
   String led_status_str;
-  if (config.num_leds == 0) led_status_str = "Disabled";
-  else if (current_error_state) led_status_str = "Error (Red)";
-  else if (current_gcode_state == "PAUSED") led_status_str = "Paused (Orange)";
-  else if (current_print_percentage > 0) led_status_str = "Printing Progress (" + String(current_print_percentage) + "%)";
-  else led_status_str = "Idle/Off (No Light)";
-
   String led_status_class;
-  if (current_error_state) led_status_class = "error";
-  else if (current_gcode_state == "PAUSED") led_status_class = "warning";
-  else if (current_print_percentage > 0) led_status_class = "warning";
-  else led_status_class = "light-on"; 
+  
+  if (config.num_leds == 0) {
+    led_status_str = "Disabled";
+    led_status_class = "disconnected";
+  }
+  else if (current_error_state) {
+    led_status_str = "Error (Red)";
+    led_status_class = "error";
+  } 
+  else if (current_gcode_state == "PAUSED") {
+    led_status_str = "Paused (Orange)";
+    led_status_class = "warning";
+  } 
+  else if (current_gcode_state == "FINISH") {
+    bool timeout_enabled = config.led_finish_timeout;
+    bool timer_active = (finishTime > 0 && (millis() - finishTime < FINISH_LIGHT_TIMEOUT));
+    
+    if (!timeout_enabled || timer_active) {
+        led_status_str = "Print Finished (Green)";
+        if(timeout_enabled) led_status_str += " (Timing out...)";
+        led_status_class = "connected"; 
+    } else {
+        led_status_str = "Idle (Finish Timeout)";
+        led_status_class = "light-on";
+    }
+  } 
+  else if (current_print_percentage > 0) {
+    led_status_str = "Printing Progress (" + String(current_print_percentage) + "%)";
+    led_status_class = "warning";
+  } 
+  else {
+    led_status_str = "Idle/Off (No Light)";
+    led_status_class = "light-on";
+  }
+
 
   String html = String("<!DOCTYPE html><html><head>");
   html += String("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
@@ -395,7 +477,8 @@ void handleRoot() {
   html += String(".warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }");
   html += String(".light-on { background-color: #cce5ff; color: #004085; border: 1px solid #b8daff; }");
   html += String(".error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; font-weight: bold; }");
-  html += String("button { background-color: #007bff; color: white; padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; }");
+  html += String("button { background-color: #007bff; color: white; padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; margin-right: 5px; }");
+  html += String("button.off { background-color: #6c757d; } button.auto { background-color: #28a745; }");
   html += String("</style></head><body><h1>Bambu Chamber Light Controller</h1>");
 
   html += String("<div class=\"status ");
@@ -417,12 +500,29 @@ void handleRoot() {
   
   html += String("<h2>External Outputs</h2>");
   
+  // NEW: Updated status text for chamber light
+  String chamber_light_status_text;
+  if (is_on) {
+    chamber_light_status_text = "ON (" + String(config.chamber_pwm_brightness) + "%)";
+  } else {
+    chamber_light_status_text = "OFF";
+  }
+  
   html += String("<div class=\"status ");
   html += (is_on ? "light-on" : "disconnected");
   html += String("\"><strong>External Light (Pin ") + String(config.chamber_light_pin) + String("):</strong> ");
-  html += (is_on ? "ON" : "OFF");
-  html += String(" (") + String(config.chamber_pwm_brightness) + "%)";
-  html += String("<small>(Logic: ") + (config.invert_output ? "Active LOW" : "Active HIGH");
+  html += chamber_light_status_text;
+  
+  html += String("<br><small><strong>Control Mode:</strong> ") + (manual_light_control ? "MANUAL" : "AUTO (Printer Sync)");
+  // NEW: Show timeout status
+  if (!manual_light_control && config.chamber_light_finish_timeout && current_gcode_state == "FINISH") {
+    if (finishTime > 0 && (millis() - finishTime < FINISH_LIGHT_TIMEOUT)) {
+        html += " (Finish light ON - timing out...)";
+    } else {
+        html += " (Finish light OFF - timeout complete)";
+    }
+  }
+  html += String("<br>(Logic: ") + (config.invert_output ? "Active LOW" : "Active HIGH");
   html += String(" | Bambu Light Mode: ") + current_light_mode + String("</small></div>");
 
   html += String("<div class=\"status ");
@@ -431,11 +531,47 @@ void handleRoot() {
   html += led_status_str;
   html += String("<small>Data Pin is hardcoded to GPIO ") + String(LED_PIN_CONST) + String(" for FastLED compatibility.</small></div>");
   
-  html += String("<p><a href=\"/config\"><button>Change Wi-Fi / Printer Configuration</button></a></p>");
+  html += String("<h2>Manual Control</h2>");
+  html += String("<p><a href=\"/light/on\"><button>Turn Light ON</button></a>");
+  html += String("<a href=\"/light/off\"><button class=\"off\">Turn Light OFF</button></a>");
+  html += String("<a href=\"/light/auto\"><button class=\"auto\">Set to AUTO</button></a></p>");
+
+  html += String("<hr><p><a href=\"/config\"><button>Change Wi-Fi / Printer Configuration</button></a></p>");
   html += String("</body></html>");
   
   server.send(200, "text/html", html);
 }
+
+// -----------------------------------------------------
+// --- Web Server Handlers for Manual Control ---
+
+void handleLightOn() {
+  Serial.println("Web Request: /light/on");
+  manual_light_control = true;
+  set_chamber_light_state(true); // Turn light ON
+  server.sendHeader("Location", "/");
+  server.send(302, "text/plain", "");
+}
+
+void handleLightOff() {
+  Serial.println("Web Request: /light/off");
+  manual_light_control = true;
+  set_chamber_light_state(false); // Turn light OFF
+  server.sendHeader("Location", "/");
+  server.send(302, "text/plain", "");
+}
+
+void handleLightAuto() {
+  Serial.println("Web Request: /light/auto");
+  manual_light_control = false;
+  // Re-sync with the last known printer light state
+  bool lightShouldBeOn = (current_light_mode == "on" || current_light_mode == "flashing");
+  // This will be overridden by the finish timer logic if applicable
+  set_chamber_light_state(lightShouldBeOn);
+  server.sendHeader("Location", "/");
+  server.send(302, "text/plain", "");
+}
+
 
 // -----------------------------------------------------
 // --- LED Control Function ---
@@ -455,7 +591,27 @@ void update_leds() {
     FastLED.setBrightness(config.led_bright_pause);
     fill_solid(leds, config.num_leds, CRGB(config.led_color_pause));
   }
-  else if (current_print_percentage > 0 && current_gcode_state != "IDLE" && current_gcode_state != "FINISH") {
+  else if (current_gcode_state == "FINISH") {
+    // Check for LED timeout logic
+    bool show_finish_light = false;
+    if (config.led_finish_timeout) {
+      if (finishTime > 0 && (millis() - finishTime < FINISH_LIGHT_TIMEOUT)) {
+        show_finish_light = true;
+      }
+    } else {
+      show_finish_light = true;
+    }
+
+    if (show_finish_light) {
+      FastLED.setBrightness(config.led_bright_finish);
+      fill_solid(leds, config.num_leds, CRGB(config.led_color_finish));
+    } else {
+      FastLED.setBrightness(config.led_bright_idle);
+      fill_solid(leds, config.num_leds, CRGB(config.led_color_idle));
+    }
+  }
+  else if (current_print_percentage > 0 && current_gcode_state != "IDLE") {
+    // Printing (Progress Bar)
     FastLED.setBrightness(config.led_bright_print);
     int leds_to_light = map(current_print_percentage, 1, 100, 1, config.num_leds);
     if (leds_to_light > config.num_leds) leds_to_light = config.num_leds;
@@ -463,6 +619,7 @@ void update_leds() {
     fill_solid(leds + leds_to_light, config.num_leds - leds_to_light, CRGB::Black);
   } 
   else {
+    // Idle state
     FastLED.setBrightness(config.led_bright_idle);
     fill_solid(leds, config.num_leds, CRGB(config.led_color_idle));
   }
@@ -471,7 +628,17 @@ void update_leds() {
 }
 
 // -----------------------------------------------------
-// --- Configuration Functions ---
+// --- Configuration & Light Control Functions ---
+
+void set_chamber_light_state(bool lightShouldBeOn) {
+  int pwm_value = 0; // Default to OFF
+  if (lightShouldBeOn) {
+    pwm_value = map(config.chamber_pwm_brightness, 0, 100, 0, 255);
+  }
+  int output_pwm = (config.invert_output) ? (255 - pwm_value) : pwm_value;
+  ledcWrite(config.chamber_light_pin, output_pwm);
+}
+
 
 void setup_chamber_light_pwm(int pin) {
     ledcAttach(pin, PWM_FREQ, PWM_RESOLUTION);
@@ -483,23 +650,27 @@ void setup_chamber_light_pwm(int pin) {
 
 bool saveConfig() {
   Serial.println("Saving configuration to LittleFS...");
-  DynamicJsonDocument doc(2048);
+  DynamicJsonDocument doc(2048); 
   doc["bbl_ip"] = config.bbl_ip;
   doc["bbl_serial"] = config.bbl_serial;
   doc["bbl_access_code"] = config.bbl_access_code;
   doc["invert_output"] = config.invert_output;
   doc["chamber_light_pin"] = config.chamber_light_pin; 
-  doc["num_leds"] = config.num_leds;
-  
   doc["chamber_pwm_brightness"] = config.chamber_pwm_brightness;
+  doc["chamber_light_finish_timeout"] = config.chamber_light_finish_timeout; // NEW
+  
+  doc["num_leds"] = config.num_leds;
   doc["led_color_idle"] = config.led_color_idle;
   doc["led_color_print"] = config.led_color_print;
   doc["led_color_pause"] = config.led_color_pause;
   doc["led_color_error"] = config.led_color_error;
+  doc["led_color_finish"] = config.led_color_finish; 
   doc["led_bright_idle"] = config.led_bright_idle;
   doc["led_bright_print"] = config.led_bright_print;
   doc["led_bright_pause"] = config.led_bright_pause;
   doc["led_bright_error"] = config.led_bright_error;
+  doc["led_bright_finish"] = config.led_bright_finish; 
+  doc["led_finish_timeout"] = config.led_finish_timeout; 
 
   File configFile = LittleFS.open("/config.json", "w");
   if (!configFile) {
@@ -524,7 +695,7 @@ bool loadConfig() {
   }
 
   size_t size = configFile.size();
-  if (size > 2048) {
+  if (size > 2048) { 
     Serial.println("Config file size is too large");
     configFile.close();
     return false;
@@ -545,17 +716,21 @@ bool loadConfig() {
   strlcpy(config.bbl_access_code, doc["bbl_access_code"] | "AABBCCDD", sizeof(config.bbl_access_code));
   config.invert_output = doc["invert_output"] | false;
   config.chamber_light_pin = doc["chamber_light_pin"] | DEFAULT_CHAMBER_LIGHT_PIN; 
-  config.num_leds = doc["num_leds"] | DEFAULT_NUM_LEDS;
-  
   config.chamber_pwm_brightness = doc["chamber_pwm_brightness"] | 100;
+  config.chamber_light_finish_timeout = doc["chamber_light_finish_timeout"] | true; // NEW
+  
+  config.num_leds = doc["num_leds"] | DEFAULT_NUM_LEDS;
   config.led_color_idle = doc["led_color_idle"] | 0x000000;
   config.led_color_print = doc["led_color_print"] | 0xFFFFFF;
   config.led_color_pause = doc["led_color_pause"] | 0xFFA500;
   config.led_color_error = doc["led_color_error"] | 0xFF0000;
+  config.led_color_finish = doc["led_color_finish"] | 0x00FF00; 
   config.led_bright_idle = doc["led_bright_idle"] | 0;
   config.led_bright_print = doc["led_bright_print"] | 100;
   config.led_bright_pause = doc["led_bright_pause"] | 100;
   config.led_bright_error = doc["led_bright_error"] | 150;
+  config.led_bright_finish = doc["led_bright_finish"] | 100; 
+  config.led_finish_timeout = doc["led_finish_timeout"] | true; 
 
   Serial.println("Configuration loaded successfully.");
   return true;
@@ -578,6 +753,9 @@ void saveConfigCallback() {
       Serial.println(" is invalid or unsafe. Retaining previous pin.");
   }
   
+  config.chamber_pwm_brightness = atoi(custom_chamber_bright_param);
+  config.chamber_light_finish_timeout = (strcmp(custom_chamber_finish_timeout_param, "1") == 0); // NEW
+  
   int tempNumLeds = atoi(custom_num_leds_param);
   if (tempNumLeds <= MAX_LEDS) {
       config.num_leds = tempNumLeds;
@@ -586,16 +764,18 @@ void saveConfigCallback() {
       config.num_leds = 0; 
   }
 
-  config.chamber_pwm_brightness = atoi(custom_chamber_bright_param);
   config.led_color_idle = strtoul(custom_idle_color_param, NULL, 16);
   config.led_color_print = strtoul(custom_print_color_param, NULL, 16);
   config.led_color_pause = strtoul(custom_pause_color_param, NULL, 16);
   config.led_color_error = strtoul(custom_error_color_param, NULL, 16);
+  config.led_color_finish = strtoul(custom_finish_color_param, NULL, 16); 
   
   config.led_bright_idle = atoi(custom_idle_bright_param);
   config.led_bright_print = atoi(custom_print_bright_param);
   config.led_bright_pause = atoi(custom_pause_bright_param);
   config.led_bright_error = atoi(custom_error_bright_param);
+  config.led_bright_finish = atoi(custom_finish_bright_param); 
+  config.led_finish_timeout = (strcmp(custom_led_finish_timeout_param, "1") == 0); 
 
   saveConfig();
 }
@@ -643,25 +823,42 @@ void callback(char* topic, byte* payload, unsigned int length) {
   // --- 1. Chamber Light Control (PWM) ---
   const char* chamberLightMode = doc["report"]["system"]["chamber_light"]["led_mode"] | "off";
   current_light_mode = chamberLightMode; 
-
-  bool lightShouldBeOn = (strcmp(chamberLightMode, "on") == 0 || strcmp(chamberLightMode, "flashing") == 0);
+  const char* gcodeState = doc["report"]["print"]["gcode_state"] | "IDLE";
   
-  int pwm_value = 0; // Default to OFF
-  if (lightShouldBeOn) {
-    pwm_value = map(config.chamber_pwm_brightness, 0, 100, 0, 255);
+  // Manage Finish Timer
+  if (strcmp(gcodeState, "FINISH") == 0 && current_gcode_state != "FINISH") {
+    finishTime = millis();
+    Serial.println("Print finished, starting 2-minute timers.");
+  } else if (strcmp(gcodeState, "FINISH") != 0 && current_gcode_state == "FINISH") {
+    finishTime = 0;
+    Serial.println("State changed from FINISH, resetting timers.");
   }
 
-  int output_pwm = (config.invert_output) ? (255 - pwm_value) : pwm_value;
-  ledcWrite(config.chamber_light_pin, output_pwm);
-
-
-  // --- 2. LED Status Bar Control ---
-  current_print_percentage = doc["report"]["print"]["print_percentage"] | 0;
-  const char* gcodeState = doc["report"]["print"]["gcode_state"] | "IDLE";
+  // Update global states
   current_gcode_state = gcodeState;
-
+  current_print_percentage = doc["report"]["print"]["print_percentage"] | 0;
   current_error_state = (strcmp(gcodeState, "FAILED") == 0 || 
                          strcmp(gcodeState, "STOP") == 0); 
-  
+
+  // --- External Light Auto Logic ---
+  if (!manual_light_control) {
+    bool lightShouldBeOn = (strcmp(chamberLightMode, "on") == 0 || strcmp(chamberLightMode, "flashing") == 0);
+
+    if (current_gcode_state == "FINISH" && config.chamber_light_finish_timeout) {
+        // We are in a finish state with the timeout enabled
+        if (finishTime > 0 && (millis() - finishTime < FINISH_LIGHT_TIMEOUT)) {
+            // Timer is active, force light ON
+            set_chamber_light_state(true);
+        } else {
+            // Timer has expired, force light OFF
+            set_chamber_light_state(false);
+        }
+    } else {
+        // Not in a finish state OR timeout is disabled, so just follow the printer's light
+        set_chamber_light_state(lightShouldBeOn);
+    }
+  }
+
+  // --- 2. LED Status Bar Control ---
   update_leds();
 }
