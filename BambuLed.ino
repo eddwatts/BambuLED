@@ -7,7 +7,9 @@
 #include "FS.h" // File System
 #include "LittleFS.h" // For ESP32 file system support
 #include <FastLED.h> 
-#include <driver/ledc.h>
+#include <driver/ledc.h> // For PWM functions
+#include <ESPmDNS.h> // For OTA
+#include <ArduinoOTA.h> // For OTA updates
 
 // --- Configuration Pin Defaults ---
 const int DEFAULT_CHAMBER_LIGHT_PIN = 27;
@@ -33,16 +35,16 @@ struct Config {
   bool invert_output = false; // Light output polarity
   int num_leds = DEFAULT_NUM_LEDS;
   
-  // NEW: Chamber Light Brightness
+  // Chamber Light Brightness
   int chamber_pwm_brightness = 100; // 0-100%
 
-  // NEW: LED Status Colors (stored as 0xRRGGBB)
+  // LED Status Colors (stored as 0xRRGGBB)
   uint32_t led_color_idle = 0x000000; // Black (off)
   uint32_t led_color_print = 0xFFFFFF; // White
   uint32_t led_color_pause = 0xFFA500; // Orange
   uint32_t led_color_error = 0xFF0000; // Red
 
-  // NEW: LED Status Brightness (0-255)
+  // LED Status Brightness (0-255)
   int led_bright_idle = 0;     // Off
   int led_bright_print = 100;  // Medium
   int led_bright_pause = 100;  // Medium
@@ -57,7 +59,6 @@ char custom_code_param[50] = "";
 char custom_invert_param[2] = "0"; // "1" for true, "0" for false
 char custom_pin_param[5] = "27"; 
 char custom_num_leds_param[5] = "10"; 
-// NEW Params
 char custom_chamber_bright_param[5] = "100";
 char custom_idle_color_param[7] = "000000";
 char custom_print_color_param[7] = "FFFFFF";
@@ -81,7 +82,7 @@ String mqtt_topic_status;
 // --- Status & Web Server Globals ---
 WebServer server(80);
 String current_light_mode = "UNKNOWN"; // Bambu's internal light status
-// NEW LED Globals
+// LED Globals
 CRGB leds[MAX_LEDS]; // Array to hold LED color values
 int current_print_percentage = 0;
 bool current_error_state = false;
@@ -102,6 +103,7 @@ bool isValidGpioPin(int pin);
 void handleRoot();
 void update_leds(); 
 void setup_chamber_light_pwm(int pin);
+void setup_ota(); // New function for OTA
 
 // -----------------------------------------------------
 
@@ -126,11 +128,9 @@ void setup() {
       Serial.println("Factory reset triggered!");
       Serial.println("Erasing /config.json...");
       LittleFS.remove("/config.json");
-      // WiFi settings will be cleared later by the WiFiManager object
   }
 
-  // 2. Load Configuration (if available)
-  // This will fail and load defaults if we just reset
+  // 2. Load Configuration
   if (!loadConfig()) {
     Serial.println("No saved configuration found. Using hardcoded defaults.");
     // Load hardcoded defaults for core values
@@ -138,10 +138,9 @@ void setup() {
     strcpy(config.bbl_serial, "012345678900000"); 
     strcpy(config.bbl_access_code, "AABBCCDD");
     config.chamber_light_pin = DEFAULT_CHAMBER_LIGHT_PIN;
-    // Other defaults are set in the struct definition
   }
 
-  // 3. Initialize Light GPIO Pin (NOW AS PWM)
+  // 3. Initialize Light GPIO Pin (PWM)
   Serial.print("Initializing Light Pin (PWM): ");
   Serial.println(config.chamber_light_pin);
   if (!isValidGpioPin(config.chamber_light_pin)) {
@@ -160,12 +159,11 @@ void setup() {
       Serial.println(" LEDs.");
       
       FastLED.addLeds<WS2812B, LED_DATA_PIN, GRB>(leds, config.num_leds).setCorrection(TypicalLEDStrip);
-      // Brightness is now set dynamically in update_leds()
       FastLED.clear();
       FastLED.show();
   } else {
       Serial.println("WARNING: LED setup skipped due to invalid pin or 0/too many LEDs.");
-      config.num_leds = 0; // Disable LED functionality if setup failed
+      config.num_leds = 0; // Disable LED functionality
   }
   
   // 5. Copy current config values to the custom parameter buffers for WiFiManager
@@ -175,7 +173,6 @@ void setup() {
   strcpy(custom_invert_param, config.invert_output ? "1" : "0");
   snprintf(custom_pin_param, 5, "%d", config.chamber_light_pin); 
   snprintf(custom_num_leds_param, 5, "%d", config.num_leds);
-  // NEW
   snprintf(custom_chamber_bright_param, 5, "%d", config.chamber_pwm_brightness);
   snprintf(custom_idle_color_param, 7, "%06X", config.led_color_idle);
   snprintf(custom_print_color_param, 7, "%06X", config.led_color_print);
@@ -190,7 +187,6 @@ void setup() {
   // 6. Setup WiFiManager
   WiFiManager wm;
 
-  // --- Handle Factory Reset Action (Part 2) ---
   if (forceReset) {
       Serial.println("Clearing saved Wi-Fi settings...");
       wm.resetSettings();
@@ -203,13 +199,11 @@ void setup() {
   WiFiManagerParameter custom_bbl_serial("serial", "Printer Serial", custom_serial_param, 40);
   WiFiManagerParameter custom_bbl_access_code("code", "Access Code (MQTT Pass)", custom_code_param, 50);
   
-  // Chamber Light Params
   WiFiManagerParameter p_light_heading("<h2>External Light Settings</h2>");
   WiFiManagerParameter custom_bbl_pin("lightpin", "External Light GPIO Pin", custom_pin_param, 5, "type='number' min='0' max='39'");
   WiFiManagerParameter custom_bbl_invert("invert", "Invert Light Logic (1=Active Low)", custom_invert_param, 2, "type='checkbox' value='1'");
   WiFiManagerParameter custom_chamber_bright("chamber_bright", "External Light Brightness (0-100%)", custom_chamber_bright_param, 5, "type='number' min='0' max='100'");
 
-  // LED Strip Params
   WiFiManagerParameter p_led_heading("<h2>LED Status Bar Settings</h2>");
   WiFiManagerParameter custom_num_leds("numleds", "Number of WS2812B LEDs (Max 60)", custom_num_leds_param, 5, "type='number' min='0' max='60'");
   WiFiManagerParameter p_led_info("<small><i>LED Data Pin is hardcoded to GPIO 4 for FastLED.</i></small>");
@@ -234,12 +228,10 @@ void setup() {
   wm.addParameter(&custom_bbl_ip);
   wm.addParameter(&custom_bbl_serial);
   wm.addParameter(&custom_bbl_access_code);
-  // Light
   wm.addParameter(&p_light_heading);
   wm.addParameter(&custom_bbl_pin); 
   wm.addParameter(&custom_bbl_invert);
   wm.addParameter(&custom_chamber_bright);
-  // LEDs
   wm.addParameter(&p_led_heading);
   wm.addParameter(&custom_num_leds); 
   wm.addParameter(&p_led_info);
@@ -260,8 +252,7 @@ void setup() {
   Serial.println("Starting WiFiManager...");
   
   // 7. Connect to WiFi
-  // If we triggered a reset, this will fail and launch the portal
-  if (!wm.autoConnect("BambuLEDSetup", "password")) {
+  if (!wm.autoConnect("BambuLightSetup", "password")) {
     Serial.println("Failed to connect and timed out. Restarting...");
     delay(3000);
     ESP.restart();
@@ -270,18 +261,18 @@ void setup() {
 
   Serial.println("Connected to WiFi!");
 
-  // 8. Update config struct from the custom parameters (in case they were changed in the portal)
-  // This is now done in saveConfigCallback()
-  
-  // 9. Re-initialize pins in case they were changed
+  // 8. Re-initialize pins in case they were changed in the portal
   int newLightPin = atoi(custom_pin_param);
   if (newLightPin != config.chamber_light_pin && isValidGpioPin(newLightPin)) {
       Serial.println("Light Pin has changed. Re-initializing PWM.");
-      ledcDetach(config.chamber_light_pin); // V3 API CHANGE: ledcDetachPin -> ledcDetach
+      ledcDetach(config.chamber_light_pin); 
       config.chamber_light_pin = newLightPin;
-      setup_chamber_light_pwm(config.chamber_light_pin); // Attach new pin
+      setup_chamber_light_pwm(config.chamber_light_pin);
   }
   
+  // 9. Setup OTA (Over-the-Air) Updates
+  setup_ota();
+
   // 10. Setup MQTT and Callback
   setup_mqtt_params();
   client.setCallback(callback);
@@ -294,6 +285,9 @@ void setup() {
 }
 
 void loop() {
+  // OTA must be handled in the main loop
+  ArduinoOTA.handle(); 
+  
   // Handle web client requests
   server.handleClient();
   
@@ -311,57 +305,86 @@ void loop() {
 }
 
 // -----------------------------------------------------
-// --- Validation & Web Status Functions ---
+// --- OTA Setup Function ---
 
 /**
- * @brief Checks if a GPIO pin is generally safe for digital output on an ESP32.
+ * @brief Initializes the ArduinoOTA service with LED feedback.
  */
+void setup_ota() {
+  // Set a hostname for the device
+  ArduinoOTA.setHostname("bambu-light-controller");
+  
+  // (Optional) You can set a password for updates
+  // ArduinoOTA.setPassword("your_ota_password");
+
+  ArduinoOTA
+    .onStart([]() {
+      Serial.println("OTA Start");
+      // Use the "Error" brightness and color for visibility
+      FastLED.setBrightness(config.led_bright_error); 
+      fill_solid(leds, config.num_leds, CRGB::Blue);
+      FastLED.show();
+    })
+    .onEnd([]() {
+      Serial.println("\nOTA End");
+      fill_solid(leds, config.num_leds, CRGB::Green);
+      FastLED.show();
+      delay(1000); // Show success
+    })
+    .onProgress([](unsigned int progress, unsigned int total) {
+      Serial.printf("OTA Progress: %u%%\r", (progress / (total / 100)));
+      
+      // Update LED progress bar
+      int leds_to_light = map(progress, 0, total, 0, config.num_leds);
+      fill_solid(leds, leds_to_light, CRGB::Blue);
+      fill_solid(leds + leds_to_light, config.num_leds - leds_to_light, CRGB::Black);
+      FastLED.show();
+    })
+    .onError([](ota_error_t error) {
+      Serial.printf("OTA Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+      else if (error == OTA_END_ERROR) Serial.println("End Failed");
+      
+      fill_solid(leds, config.num_leds, CRGB::Red); // Show Red on error
+      FastLED.show();
+      delay(2000); // Show error
+    });
+
+  ArduinoOTA.begin();
+  Serial.println("OTA Ready. Hostname: bambu-light-controller");
+}
+
+// -----------------------------------------------------
+// --- Validation & Web Status Functions ---
+
 bool isValidGpioPin(int pin) {
     if (pin < 0 || pin > 39) return false;
-    // Reserved/Flash pins (6-11)
-    if (pin >= 6 && pin <= 11) return false;
-    // Input-only pins (34, 35, 36, 39)
-    if (pin >= 34) return false;
+    if (pin >= 6 && pin <= 11) return false; // Reserved/Flash
+    if (pin >= 34) return false; // Input-only
     return true; 
 }
 
 
-/**
- * @brief Serves a simple status page on the device's IP.
- */
 void handleRoot() {
-  // Read the current PWM duty cycle from the channel
-  int pwm_duty = ledcRead(config.chamber_light_pin); // V3 API CHANGE: Read from pin, not channel
+  int pwm_duty = ledcRead(config.chamber_light_pin);
   bool is_on = (config.invert_output) ? (pwm_duty < 255) : (pwm_duty > 0);
   
   String led_status_str;
-  if (config.num_leds == 0) {
-      led_status_str = "Disabled";
-  } else if (current_error_state) {
-      led_status_str = "Error (Red)";
-  } else if (current_gcode_state == "PAUSED") {
-      led_status_str = "Paused (Orange)";
-  } else if (current_print_percentage > 0) {
-      led_status_str = "Printing Progress (" + String(current_print_percentage) + "%)";
-  } else {
-      led_status_str = "Idle/Off (No Light)";
-  }
+  if (config.num_leds == 0) led_status_str = "Disabled";
+  else if (current_error_state) led_status_str = "Error (Red)";
+  else if (current_gcode_state == "PAUSED") led_status_str = "Paused (Orange)";
+  else if (current_print_percentage > 0) led_status_str = "Printing Progress (" + String(current_print_percentage) + "%)";
+  else led_status_str = "Idle/Off (No Light)";
 
-  // Pre-calculate the LED status class
   String led_status_class;
-  if (current_error_state) {
-      led_status_class = "error";
-  } else if (current_gcode_state == "PAUSED") {
-      led_status_class = "warning"; // Use warning color for Orange
-  } else if (current_print_percentage > 0) {
-      led_status_class = "warning";
-  } else {
-      led_status_class = "light-on"; // Use light-on for idle (off)
-  }
+  if (current_error_state) led_status_class = "error";
+  else if (current_gcode_state == "PAUSED") led_status_class = "warning";
+  else if (current_print_percentage > 0) led_status_class = "warning";
+  else led_status_class = "light-on"; 
 
-  // ---
-  // Build the HTML string by robustly appending (+=) each part.
-  // ---
   String html = String("<!DOCTYPE html><html><head>");
   html += String("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
   html += String("<title>Bambu Light Status</title><style>");
@@ -375,7 +398,6 @@ void handleRoot() {
   html += String("button { background-color: #007bff; color: white; padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; }");
   html += String("</style></head><body><h1>Bambu Chamber Light Controller</h1>");
 
-  // --- WiFi Status Block ---
   html += String("<div class=\"status ");
   html += (WiFi.status() == WL_CONNECTED ? "connected" : "disconnected");
   html += String("\"><strong>WiFi Status:</strong> ");
@@ -383,22 +405,18 @@ void handleRoot() {
   html += wifi_status;
   html += String("</div>");
   
-  // --- MQTT Status Block ---
   html += String("<div class=\"status ");
   html += (client.connected() ? "connected" : "disconnected");
   html += String("\"><strong>MQTT Status:</strong> ");
   html += (client.connected() ? "CONNECTED" : "DISCONNECTED");
   html += String("</div>");
 
-  // --- Printer Status Block ---
   html += String("<h2>Printer Status</h2>");
   html += String("<p><strong>GCODE State:</strong> ") + current_gcode_state + String("</p>");
   html += String("<p><strong>Print Percentage:</strong> ") + String(current_print_percentage) + String(" %</p>");
   
-  // --- External Outputs Block ---
   html += String("<h2>External Outputs</h2>");
   
-  // Chamber Light Block
   html += String("<div class=\"status ");
   html += (is_on ? "light-on" : "disconnected");
   html += String("\"><strong>External Light (Pin ") + String(config.chamber_light_pin) + String("):</strong> ");
@@ -407,14 +425,12 @@ void handleRoot() {
   html += String("<small>(Logic: ") + (config.invert_output ? "Active LOW" : "Active HIGH");
   html += String(" | Bambu Light Mode: ") + current_light_mode + String("</small></div>");
 
-  // LED Status Bar Block
   html += String("<div class=\"status ");
   html += led_status_class;
   html += String("\"><strong>LED Status Bar (Pin ") + String(LED_PIN_CONST) + String(" / ") + String(config.num_leds) + String(" LEDs):</strong> ");
   html += led_status_str;
   html += String("<small>Data Pin is hardcoded to GPIO ") + String(LED_PIN_CONST) + String(" for FastLED compatibility.</small></div>");
   
-  // --- Footer ---
   html += String("<p><a href=\"/config\"><button>Change Wi-Fi / Printer Configuration</button></a></p>");
   html += String("</body></html>");
   
@@ -422,44 +438,31 @@ void handleRoot() {
 }
 
 // -----------------------------------------------------
-// --- LED Control Function (REWRITTEN) ---
+// --- LED Control Function ---
 
-/**
- * @brief Updates the WS2812B strip based on configured colors and brightness.
- */
 void update_leds() {
-  // If LEDs are configured to be disabled (num_leds == 0), exit immediately
   if (config.num_leds == 0) {
     FastLED.clear();
-    FastLED.show(); // Ensure they are off if just disabled
+    FastLED.show();
     return;
   }
 
   if (current_error_state) {
-    // Red for Error/Stop/Failed
     FastLED.setBrightness(config.led_bright_error);
     fill_solid(leds, config.num_leds, CRGB(config.led_color_error));
   }
   else if (current_gcode_state == "PAUSED") {
-    // Orange for Paused
     FastLED.setBrightness(config.led_bright_pause);
     fill_solid(leds, config.num_leds, CRGB(config.led_color_pause));
   }
   else if (current_print_percentage > 0 && current_gcode_state != "IDLE" && current_gcode_state != "FINISH") {
-    // Printing (Progress Bar)
     FastLED.setBrightness(config.led_bright_print);
-    
-    // Calculate how many LEDs should be lit
     int leds_to_light = map(current_print_percentage, 1, 100, 1, config.num_leds);
     if (leds_to_light > config.num_leds) leds_to_light = config.num_leds;
-
-    // Fill the "on" LEDs
     fill_solid(leds, leds_to_light, CRGB(config.led_color_print));
-    // Fill the "off" LEDs
     fill_solid(leds + leds_to_light, config.num_leds - leds_to_light, CRGB::Black);
   } 
   else {
-    // Idle, finished, or off state
     FastLED.setBrightness(config.led_bright_idle);
     fill_solid(leds, config.num_leds, CRGB(config.led_color_idle));
   }
@@ -470,27 +473,17 @@ void update_leds() {
 // -----------------------------------------------------
 // --- Configuration Functions ---
 
-/**
- * @brief Sets up the chamber light pin as a PWM output.
- */
 void setup_chamber_light_pwm(int pin) {
-    // V3 API CHANGE: ledcSetup and ledcAttachPin are combined.
-    // This now configures and attaches the pin automatically.
     ledcAttach(pin, PWM_FREQ, PWM_RESOLUTION);
-    
-    // Set initial state (OFF)
     int off_value = config.invert_output ? 255 : 0;
-    ledcWrite(pin, off_value); // V3 API CHANGE: Write to pin, not channel
+    ledcWrite(pin, off_value);
     Serial.printf("PWM enabled on GPIO %d. OFF value: %d\n", pin, off_value);
 }
 
 
-/**
- * @brief Saves the current configuration struct to a JSON file in LittleFS.
- */
 bool saveConfig() {
   Serial.println("Saving configuration to LittleFS...");
-  DynamicJsonDocument doc(2048); // Increased size for new params
+  DynamicJsonDocument doc(2048);
   doc["bbl_ip"] = config.bbl_ip;
   doc["bbl_serial"] = config.bbl_serial;
   doc["bbl_access_code"] = config.bbl_access_code;
@@ -498,7 +491,6 @@ bool saveConfig() {
   doc["chamber_light_pin"] = config.chamber_light_pin; 
   doc["num_leds"] = config.num_leds;
   
-  // NEW
   doc["chamber_pwm_brightness"] = config.chamber_pwm_brightness;
   doc["led_color_idle"] = config.led_color_idle;
   doc["led_color_print"] = config.led_color_print;
@@ -525,9 +517,6 @@ bool saveConfig() {
   return true;
 }
 
-/**
- * @brief Loads the configuration from a JSON file in LittleFS.
- */
 bool loadConfig() {
   File configFile = LittleFS.open("/config.json", "r");
   if (!configFile) {
@@ -535,13 +524,13 @@ bool loadConfig() {
   }
 
   size_t size = configFile.size();
-  if (size > 2048) { // Increased size
+  if (size > 2048) {
     Serial.println("Config file size is too large");
     configFile.close();
     return false;
   }
 
-  DynamicJsonDocument doc(2048); // Increased size
+  DynamicJsonDocument doc(2048);
   DeserializationError error = deserializeJson(doc, configFile);
   configFile.close();
 
@@ -551,7 +540,6 @@ bool loadConfig() {
     return false;
   }
   
-  // Copy loaded values into the config struct
   strlcpy(config.bbl_ip, doc["bbl_ip"] | "192.168.1.100", sizeof(config.bbl_ip));
   strlcpy(config.bbl_serial, doc["bbl_serial"] | "012345678900000", sizeof(config.bbl_serial));
   strlcpy(config.bbl_access_code, doc["bbl_access_code"] | "AABBCCDD", sizeof(config.bbl_access_code));
@@ -559,7 +547,6 @@ bool loadConfig() {
   config.chamber_light_pin = doc["chamber_light_pin"] | DEFAULT_CHAMBER_LIGHT_PIN; 
   config.num_leds = doc["num_leds"] | DEFAULT_NUM_LEDS;
   
-  // NEW
   config.chamber_pwm_brightness = doc["chamber_pwm_brightness"] | 100;
   config.led_color_idle = doc["led_color_idle"] | 0x000000;
   config.led_color_print = doc["led_color_print"] | 0xFFFFFF;
@@ -574,13 +561,9 @@ bool loadConfig() {
   return true;
 }
 
-/**
- * @brief Callback fired when parameters are successfully saved via the portal.
- */
 void saveConfigCallback() {
   Serial.println("WiFiManager signaled configuration save.");
   
-  // 1. Copy new values from custom parameter buffers 
   strcpy(config.bbl_ip, custom_ip_param);
   strcpy(config.bbl_serial, custom_serial_param);
   strcpy(config.bbl_access_code, custom_code_param);
@@ -603,9 +586,7 @@ void saveConfigCallback() {
       config.num_leds = 0; 
   }
 
-  // NEW
   config.chamber_pwm_brightness = atoi(custom_chamber_bright_param);
-  // Convert hex strings (RRGGBB) to uint32_t (0xRRGGBB)
   config.led_color_idle = strtoul(custom_idle_color_param, NULL, 16);
   config.led_color_print = strtoul(custom_print_color_param, NULL, 16);
   config.led_color_pause = strtoul(custom_pause_color_param, NULL, 16);
@@ -616,28 +597,19 @@ void saveConfigCallback() {
   config.led_bright_pause = atoi(custom_pause_bright_param);
   config.led_bright_error = atoi(custom_error_bright_param);
 
-  // 2. Save the config
   saveConfig();
 }
 
 // -----------------------------------------------------
 // --- MQTT Functions ---
 
-/**
- * @brief Sets up MQTT parameters using the configured values.
- */
 void setup_mqtt_params() {
     client.setServer(config.bbl_ip, mqtt_port);
-    // Construct the subscription topic using the configured serial number
     mqtt_topic_status = "device/" + String(config.bbl_serial) + "/report";
     Serial.print("MQTT Server: "); Serial.println(config.bbl_ip);
     Serial.print("Subscription Topic: "); Serial.println(mqtt_topic_status);
 }
 
-/**
- * @brief Handles the MQTT reconnection logic and subscription (non-blocking).
- * @return true if connected, false otherwise.
- */
 bool reconnect_mqtt() {
   Serial.print("Attempting MQTT connection...");
   
@@ -655,10 +627,6 @@ bool reconnect_mqtt() {
   }
 }
 
-/**
- * @brief The function called when an MQTT message is received.
- * It parses the JSON payload and controls the external outputs.
- */
 void callback(char* topic, byte* payload, unsigned int length) {
   
   char messageBuffer[length + 1];
@@ -672,23 +640,19 @@ void callback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  // --- 1. Chamber Light Control (NOW WITH PWM) ---
+  // --- 1. Chamber Light Control (PWM) ---
   const char* chamberLightMode = doc["report"]["system"]["chamber_light"]["led_mode"] | "off";
-  current_light_mode = chamberLightMode; // Update global status
+  current_light_mode = chamberLightMode; 
 
   bool lightShouldBeOn = (strcmp(chamberLightMode, "on") == 0 || strcmp(chamberLightMode, "flashing") == 0);
   
   int pwm_value = 0; // Default to OFF
   if (lightShouldBeOn) {
-    // Map 0-100% brightness config to 0-255 PWM value
     pwm_value = map(config.chamber_pwm_brightness, 0, 100, 0, 255);
   }
 
-  // Apply inversion logic
   int output_pwm = (config.invert_output) ? (255 - pwm_value) : pwm_value;
-  
-  // Write the final value (0-255) to the PWM channel
-  ledcWrite(config.chamber_light_pin, output_pwm); // V3 API CHANGE: Write to pin, not channel
+  ledcWrite(config.chamber_light_pin, output_pwm);
 
 
   // --- 2. LED Status Bar Control ---
@@ -696,12 +660,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
   const char* gcodeState = doc["report"]["print"]["gcode_state"] | "IDLE";
   current_gcode_state = gcodeState;
 
-  // Error condition check
-  // "PAUSED" is now handled separately by update_leds()
   current_error_state = (strcmp(gcodeState, "FAILED") == 0 || 
                          strcmp(gcodeState, "STOP") == 0); 
   
-  // Update the LED status bar
   update_leds();
 }
-
