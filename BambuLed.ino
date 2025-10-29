@@ -7,12 +7,11 @@
 #include "FS.h" // File System
 #include "LittleFS.h" // For ESP32 file system support
 #include <FastLED.h> 
-#include <driver/ledc.h> // <-- ADDED THIS INCLUDE FOR PWM FUNCTIONS
+#include <driver/ledc.h>
 
 // --- Configuration Pin Defaults ---
 const int DEFAULT_CHAMBER_LIGHT_PIN = 27;
 #define FORCE_RESET_PIN 16 // GPIO pin to ground for factory reset
-// #define PWM_CHANNEL 0 // No longer needed for V3 API
 #define PWM_FREQ 5000 // 5kHz frequency for PWM
 #define PWM_RESOLUTION 8 // 8-bit resolution (0-255)
 
