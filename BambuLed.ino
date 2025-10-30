@@ -121,7 +121,10 @@ bool current_error_state = false;
 String current_gcode_state = "IDLE";
 float current_bed_temp = 0.0;
 float current_nozzle_temp = 0.0;
-String current_wifi_signal = "N/A"; // <-- NEW
+float current_bed_target_temp = 0.0;
+float current_nozzle_target_temp = 0.0;
+int current_time_remaining = 0; // <-- NEW: in seconds
+String current_wifi_signal = "N/A";
 String last_mqtt_json = "No data received yet.";
 File restoreFile;
 bool restoreSuccess = false;
@@ -143,6 +146,7 @@ bool saveConfig();
 void saveConfigCallback();
 bool isValidGpioPin(int pin);
 void handleRoot();
+void handleStatusJson(); // <-- NEW
 void update_leds();
 void setup_chamber_light_pwm(int pin);
 // void setup_ota(); // REMOVED FOR SPACE
@@ -158,7 +162,7 @@ void handleRestoreUpload();
 void handleRestoreReboot();
 void parseFullReport(JsonObject doc);
 void parseDeltaUpdate(JsonArray arr);
-void updatePrinterState(String gcodeState, int printPercentage, String chamberLightMode, float bedTemp, float nozzleTemp, String wifiSignal); // <-- UPDATED
+void updatePrinterState(String gcodeState, int printPercentage, String chamberLightMode, float bedTemp, float nozzleTemp, String wifiSignal, float bedTargetTemp, float nozzleTargetTemp, int timeRemaining); // <-- UPDATED
 
 // -----------------------------------------------------
 
@@ -400,15 +404,16 @@ void setup() {
   // 11. Setup Web Server
   Serial.println("Setting up Web Server...");
   server.on("/", handleRoot);
+  server.on("/status.json", handleStatusJson); // <-- NEW: Add handler for live data
   server.on("/light/on", handleLightOn);
   server.on("/light/off", handleLightOff);
   server.on("/light/auto", handleLightAuto);
   server.on("/config", handleConfig); // Add handler for config page
-  server.on("/mqtt", handleMqttJson); // <-- NEW: Add handler for JSON
-  server.on("/backup", HTTP_GET, handleBackup); // <-- NEW
-  server.on("/restore", HTTP_GET, handleRestorePage); // <-- NEW: Show upload page
-  server.on("/restore", HTTP_POST, handleRestoreReboot); // <-- NEW: Handle reboot after upload
-  server.onFileUpload(handleRestoreUpload); // <-- NEW: Handle the file upload itself
+  server.on("/mqtt", handleMqttJson);
+  server.on("/backup", HTTP_GET, handleBackup);
+  server.on("/restore", HTTP_GET, handleRestorePage);
+  server.on("/restore", HTTP_POST, handleRestoreReboot);
+  server.onFileUpload(handleRestoreUpload);
   server.begin();
   Serial.print("Status page available at http://");
   Serial.println(WiFi.localIP());
@@ -530,13 +535,166 @@ bool isValidGpioPin(int pin) {
 }
 
 
+// --- UPDATED: handleRoot() now serves a static page, JS does the work ---
 void handleRoot() {
+  // This function just serves the static HTML page.
+  // The live data will be fetched by JavaScript.
+
+  String html = String("<!DOCTYPE html><html><head>");
+  html += String("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+  html += String("<title>Bambu Light Status</title><style>");
+  html += String("body { font-family: Arial, sans-serif; margin: 20px; }");
+  html += String(".status { padding: 10px; margin-bottom: 10px; border-radius: 5px; transition: background-color 0.5s, border-color 0.5s; }"); // Added transition
+  html += String(".connected { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }");
+  html += String(".disconnected { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }");
+  html += String(".warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }");
+  html += String(".light-on { background-color: #cce5ff; color: #004085; border: 1px solid #b8daff; }");
+  html += String(".error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; font-weight: bold; }");
+  html += String("button { background-color: #007bff; color: white; padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; margin-right: 5px; margin-bottom: 5px; }");
+  html += String("button.off { background-color: #6c757d; } button.auto { background-color: #28a745; }");
+  html += String("span.data { font-weight: normal; }"); // Class for the data part
+  html += String("</style></head><body><h1>Bambu Chamber Light Controller</h1>");
+
+  // --- WiFi Status (Static on load) ---
+  html += String("<div class=\"status ");
+  html += (WiFi.status() == WL_CONNECTED ? "connected" : "disconnected");
+  html += String("\"><strong>WiFi Status:</strong> ");
+  String wifi_status = (WiFi.status() == WL_CONNECTED ? "CONNECTED (" + WiFi.SSID() + " / " + WiFi.localIP().toString() + ")" : "DISCONNECTED");
+  html += wifi_status;
+  html += String("</div>");
+
+  // --- MQTT Status (Live) ---
+  html += String("<div id=\"mqtt-status-div\" class=\"status disconnected\">"); // Start as disconnected
+  html += String("<strong>MQTT Status:</strong> <span id=\"mqtt-status\" class=\"data\">DISCONNECTED</span>");
+  html += String(" | <a href=\"/mqtt\" target=\"_blank\">View Last JSON</a>");
+  html += String("</div>");
+
+  // --- Printer Status (Live) ---
+  html += String("<h2>Printer Status</h2>");
+  html += String("<p><strong>GCODE State:</strong> <span id=\"gcode-state\" class=\"data\">N/A</span></p>");
+  html += String("<p><strong>Print Percentage:</strong> <span id=\"print-percent\" class=\"data\">0 %</span></p>");
+  html += String("<p><strong>Time Remaining:</strong> <span id=\"print-time\" class=\"data\">--:--:--</span></p>"); // <-- NEW
+  html += String("<p><strong>Nozzle Temp:</strong> <span id=\"nozzle-temp\" class=\"data\">0.0 / 0.0 &deg;C</span></p>");
+  html += String("<p><strong>Bed Temp:</strong> <span id=\"bed-temp\" class=\"data\">0.0 / 0.0 &deg;C</span></p>");
+  html += String("<p><strong>Printer WiFi Signal:</strong> <span id=\"wifi-signal\" class=\"data\">N/A</span></p>");
+
+  // --- External Outputs (Live) ---
+  html += String("<h2>External Outputs</h2>");
+  html += String("<div id=\"light-status-div\" class=\"status disconnected\">");
+  html += String("<strong>External Light (Pin ") + String(config.chamber_light_pin) + String("):</strong> ");
+  html += String("<span id=\"light-status\" class=\"data\">N/A</span>");
+  html += String("<br><small><strong>Control Mode:</strong> <span id=\"light-mode\" class=\"data\">N/A</span>");
+  html += String(" | (Logic: ") + (config.invert_output ? "Active LOW" : "Active HIGH");
+  html += String(" | Bambu Light Mode: <span id=\"bambu-light-mode\" class=\"data\">N/A</span>)</small></div>");
+
+  // --- LED Status (Live) ---
+  html += String("<div id=\"led-status-div\" class=\"status disconnected\">");
+  html += String("<strong>LED Status Bar (Pin ") + String(LED_PIN_CONST) + String(" / ") + String(config.num_leds) + String(" LEDs):</strong> ");
+  html += String("<span id=\"led-status\" class=\"data\">N/A</span>");
+  html += String("<small>Data Pin is hardcoded to GPIO ") + String(LED_PIN_CONST) + String(" for FastLED compatibility.</small></div>");
+
+  // --- Manual Control (Static) ---
+  html += String("<h2>Manual Control</h2>");
+  html += String("<p><a href=\"/light/on\"><button>Turn Light ON</button></a>");
+  html += String("<a href=\"/light/off\"><button class=\"off\">Turn Light OFF</button></a>");
+  html += String("<a href=\"/light/auto\"><button class=\"auto\">Set to AUTO</button></a></p>");
+
+  html += String("<hr><p><a href=\"/config\"><button>Change Device Settings</button></a></p>");
+  
+  // --- NEW: JavaScript for Live Updates ---
+  html += String("<script>");
+  html += String("function formatTime(s) {");
+  html += String("if (s <= 0) return '--:--:--';");
+  html += String("let h = Math.floor(s / 3600); s %= 3600;");
+  html += String("let m = Math.floor(s / 60); s %= 60;");
+  html += String("let m_str = m < 10 ? '0' + m : m;"); // leading zero for minutes
+  html += String("let s_str = s < 10 ? '0' + s : s;"); // leading zero for seconds
+  html += String("return h > 0 ? h + ':' + m_str + ':' + s_str : m_str + ':' + s_str;"); // Show HH:MM:SS or MM:SS
+  html += String("}");
+  
+  html += String("async function updateStatus() {");
+  html += String("try {");
+  html += String("const response = await fetch('/status.json');");
+  html += String("if (!response.ok) return;");
+  html += String("const data = await response.json();");
+  
+  // MQTT Status
+  html += String("document.getElementById('mqtt-status').innerText = data.mqtt_connected ? 'CONNECTED' : 'DISCONNECTED';");
+  html += String("document.getElementById('mqtt-status-div').className = 'status ' + (data.mqtt_connected ? 'connected' : 'disconnected');");
+  
+  // Printer Status
+  html += String("document.getElementById('gcode-state').innerText = data.gcode_state;");
+  html += String("document.getElementById('print-percent').innerText = data.print_percentage + ' %';");
+  html += String("document.getElementById('print-time').innerText = formatTime(data.time_remaining);");
+  html += String("document.getElementById('nozzle-temp').innerHTML = data.nozzle_temp.toFixed(1) + ' / ' + data.nozzle_target_temp.toFixed(1) + ' &deg;C';");
+  html += String("document.getElementById('bed-temp').innerHTML = data.bed_temp.toFixed(1) + ' / ' + data.bed_target_temp.toFixed(1) + ' &deg;C';");
+  html += String("document.getElementById('wifi-signal').innerText = data.wifi_signal;");
+  
+  // Light Status
+  html += String("document.getElementById('light-status').innerText = data.light_is_on ? ('ON (' + data.chamber_bright + '%)') : 'OFF';");
+  html += String("document.getElementById('light-status-div').className = 'status ' + (data.light_is_on ? 'light-on' : 'disconnected');");
+  html += String("document.getElementById('light-mode').innerText = data.manual_control ? 'MANUAL' : ('AUTO' + data.light_mode_extra);");
+  html += String("document.getElementById('bambu-light-mode').innerText = data.bambu_light_mode;");
+  
+  // LED Status
+  html += String("document.getElementById('led-status').innerText = data.led_status_str;");
+  html += String("document.getElementById('led-status-div').className = 'status ' + data.led_status_class;");
+  
+  html += String("} catch (e) { console.error('Error fetching status:', e); }");
+  html += String("}");
+  
+  // Run on load and then every 3 seconds
+  html += String("document.addEventListener('DOMContentLoaded', updateStatus);");
+  html += String("setInterval(updateStatus, 3000);");
+  
+  html += String("</script>");
+  // --- End JavaScript ---
+  
+  html += String("</body></html>");
+
+  server.send(200, "text/html", html);
+}
+// --- END UPDATED handleRoot ---
+
+// --- NEW: Handler for sending live status data as JSON ---
+void handleStatusJson() {
+  // Serial.println("Web Request: /status.json"); // Optional: for debugging
+  DynamicJsonDocument doc(1024);
+
+  // MQTT Status
+  doc["mqtt_connected"] = client.connected();
+
+  // Printer Status
+  doc["gcode_state"] = current_gcode_state;
+  doc["print_percentage"] = current_print_percentage;
+  doc["time_remaining"] = current_time_remaining;
+  doc["nozzle_temp"] = current_nozzle_temp;
+  doc["nozzle_target_temp"] = current_nozzle_target_temp;
+  doc["bed_temp"] = current_bed_temp;
+  doc["bed_target_temp"] = current_bed_target_temp;
+  doc["wifi_signal"] = current_wifi_signal;
+
+  // Light Status
   int pwm_duty = ledcRead(config.chamber_light_pin);
   bool is_on = (config.invert_output) ? (pwm_duty < 255) : (pwm_duty > 0);
+  doc["light_is_on"] = is_on;
+  doc["chamber_bright"] = config.chamber_pwm_brightness;
+  doc["manual_control"] = manual_light_control;
+  doc["bambu_light_mode"] = current_light_mode;
+  
+  String light_mode_extra = "";
+  if (!manual_light_control && config.chamber_light_finish_timeout && current_gcode_state == "FINISH") {
+    if (finishTime > 0 && (millis() - finishTime < FINISH_LIGHT_TIMEOUT)) {
+      light_mode_extra = " (Finish light ON - timing out...)";
+    } else {
+      light_mode_extra = " (Finish light OFF - timeout complete)";
+    }
+  }
+  doc["light_mode_extra"] = light_mode_extra;
 
+  // LED Status (re-using logic from handleRoot)
   String led_status_str;
   String led_status_class;
-
   if (config.num_leds == 0) {
     led_status_str = "Disabled";
     led_status_class = "disconnected";
@@ -552,7 +710,6 @@ void handleRoot() {
   else if (current_gcode_state == "FINISH") {
     bool timeout_enabled = config.led_finish_timeout;
     bool timer_active = (finishTime > 0 && (millis() - finishTime < FINISH_LIGHT_TIMEOUT));
-
     if (!timeout_enabled || timer_active) {
         led_status_str = "Print Finished (Green)";
         if(timeout_enabled) led_status_str += " (Timing out...)";
@@ -570,87 +727,15 @@ void handleRoot() {
     led_status_str = "Idle/Off (No Light)";
     led_status_class = "light-on";
   }
-
-
-  String html = String("<!DOCTYPE html><html><head>");
-  html += String("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
-  html += String("<title>Bambu Light Status</title><style>");
-  html += String("body { font-family: Arial, sans-serif; margin: 20px; }");
-  html += String(".status { padding: 10px; margin-bottom: 10px; border-radius: 5px; }");
-  html += String(".connected { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }");
-  html += String(".disconnected { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }");
-  html += String(".warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }");
-  html += String(".light-on { background-color: #cce5ff; color: #004085; border: 1px solid #b8daff; }");
-  html += String(".error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; font-weight: bold; }");
-  html += String("button { background-color: #007bff; color: white; padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; margin-right: 5px; margin-bottom: 5px; }");
-  html += String("button.off { background-color: #6c757d; } button.auto { background-color: #28a745; }");
-  html += String("</style></head><body><h1>Bambu Chamber Light Controller</h1>");
-
-  html += String("<div class=\"status ");
-  html += (WiFi.status() == WL_CONNECTED ? "connected" : "disconnected");
-  html += String("\"><strong>WiFi Status:</strong> ");
-  String wifi_status = (WiFi.status() == WL_CONNECTED ? "CONNECTED (" + WiFi.SSID() + " / " + WiFi.localIP().toString() + ")" : "DISCONNECTED");
-  html += wifi_status;
-  html += String("</div>");
-
-  html += String("<div class=\"status ");
-  html += (client.connected() ? "connected" : "disconnected");
-  html += String("\"><strong>MQTT Status:</strong> ");
-  html += (client.connected() ? "CONNECTED" : "DISCONNECTED");
-  html += String(" | <a href=\"/mqtt\" target=\"_blank\">View Last JSON</a>");
-  html += String("</div>");
-
-  html += String("<h2>Printer Status</h2>");
-  html += String("<p><strong>GCODE State:</strong> ") + current_gcode_state + String("</p>");
-  html += String("<p><strong>Print Percentage:</strong> ") + String(current_print_percentage) + String(" %</p>");
-  html += String("<p><strong>Nozzle Temp:</strong> ") + String(current_nozzle_temp, 1) + String(" &deg;C</p>");
-  html += String("<p><strong>Bed Temp:</strong> ") + String(current_bed_temp, 1) + String(" &deg;C</p>");
-  html += String("<p><strong>Printer WiFi Signal:</strong> ") + current_wifi_signal + String("</p>"); // <-- NEW
-
-  html += String("<h2>External Outputs</h2>");
-
-  String chamber_light_status_text;
-  if (is_on) {
-    chamber_light_status_text = "ON (" + String(config.chamber_pwm_brightness) + "%)";
-  } else {
-    chamber_light_status_text = "OFF";
-  }
-
-  html += String("<div class=\"status ");
-  html += (is_on ? "light-on" : "disconnected");
-  html += String("\"><strong>External Light (Pin ") + String(config.chamber_light_pin) + String("):</strong> ");
-  html += chamber_light_status_text;
-
-  html += String("<br><small><strong>Control Mode:</strong> ") + (manual_light_control ? "MANUAL" : "AUTO (Printer Sync)");
-  if (!manual_light_control && config.chamber_light_finish_timeout && current_gcode_state == "FINISH") {
-    if (finishTime > 0 && (millis() - finishTime < FINISH_LIGHT_TIMEOUT)) {
-        html += " (Finish light ON - timing out...)";
-    } else {
-        html += " (Finish light OFF - timeout complete)";
-    }
-  }
-  html += String("<br>(Logic: ") + (config.invert_output ? "Active LOW" : "Active HIGH");
-  html += String(" | Bambu Light Mode: ") + current_light_mode + String("</small></div>");
-
-  html += String("<div class=\"status ");
-  html += led_status_class;
-  html += String("\"><strong>LED Status Bar (Pin ") + String(LED_PIN_CONST) + String(" / ") + String(config.num_leds) + String(" LEDs):</strong> ");
-  html += led_status_str;
-  html += String("<small>Data Pin is hardcoded to GPIO ") + String(LED_PIN_CONST) + String(" for FastLED compatibility.</small></div>");
-
-  html += String("<h2>Manual Control</h2>");
-  html += String("<p><a href=\"/light/on\"><button>Turn Light ON</button></a>");
-  html += String("<a href=\"/light/off\"><button class=\"off\">Turn Light OFF</button></a>");
-  html += String("<a href=\"/light/auto\"><button class=\"auto\">Set to AUTO</button></a></p>");
-
-  // --- UPDATED BUTTON TEXT ---
-  html += String("<hr><p><a href=\"/config\"><button>Change Device Settings</button></a></p>");
-  // --- END UPDATE ---
+  doc["led_status_str"] = led_status_str;
+  doc["led_status_class"] = led_status_class;
   
-  html += String("</body></html>");
-
-  server.send(200, "text/html", html);
+  // Send the JSON
+  String json_output;
+  serializeJson(doc, json_output);
+  server.send(200, "application/json", json_output);
 }
+// --- END NEW JSON HANDLER ---
 
 // -----------------------------------------------------
 // --- Web Server Handlers for Manual Control ---
@@ -1460,8 +1545,11 @@ void parseFullReport(JsonObject doc) {
   int newPrintPercentage = current_print_percentage;
   float newBedTemp = current_bed_temp;
   float newNozzleTemp = current_nozzle_temp;
-  const char* newWifiSignal = current_wifi_signal.c_str(); // <-- NEW
-  bool lightModeFound = false; // <-- NEW
+  float newBedTargetTemp = current_bed_target_temp;
+  float newNozzleTargetTemp = current_nozzle_target_temp;
+  int newTimeRemaining = current_time_remaining; // <-- NEW
+  const char* newWifiSignal = current_wifi_signal.c_str();
+  bool lightModeFound = false;
 
   // --- Get Light Mode (NEW LOGIC) ---
   // 1. Check for "lights_report" array inside "print" (for Type 3 messages)
@@ -1498,6 +1586,9 @@ void parseFullReport(JsonObject doc) {
   newPrintPercentage = print_data["print_percentage"] | current_print_percentage;
   newBedTemp = print_data["bed_temper"] | current_bed_temp;
   newNozzleTemp = print_data["nozzle_temper"] | current_nozzle_temp;
+  newBedTargetTemp = print_data["bed_target_temper"] | current_bed_target_temp;
+  newNozzleTargetTemp = print_data["nozzle_target_temper"] | current_nozzle_target_temp;
+  newTimeRemaining = print_data["mc_remaining_time"] | current_time_remaining; // <-- NEW
 
   // Get WiFi signal (can be in system or print)
   if (!system_data.isNull() && system_data.containsKey("wifi_signal")) {
@@ -1507,7 +1598,7 @@ void parseFullReport(JsonObject doc) {
   }
 
   // --- Call the state updater ---
-  updatePrinterState(String(newGcodeState), newPrintPercentage, String(newChamberLightMode), newBedTemp, newNozzleTemp, String(newWifiSignal));
+  updatePrinterState(String(newGcodeState), newPrintPercentage, String(newChamberLightMode), newBedTemp, newNozzleTemp, String(newWifiSignal), newBedTargetTemp, newNozzleTargetTemp, newTimeRemaining);
 }
 // --- END UPDATED function ---
 
@@ -1521,7 +1612,10 @@ void parseDeltaUpdate(JsonArray arr) {
   String newChamberLightMode = current_light_mode;
   float newBedTemp = current_bed_temp;
   float newNozzleTemp = current_nozzle_temp;
-  String newWifiSignal = current_wifi_signal; // <-- NEW
+  float newBedTargetTemp = current_bed_target_temp;
+  float newNozzleTargetTemp = current_nozzle_target_temp;
+  int newTimeRemaining = current_time_remaining; // <-- NEW
+  String newWifiSignal = current_wifi_signal;
 
   // Iterate the array (can contain multiple updates)
   for (JsonObject node : arr) {
@@ -1548,6 +1642,18 @@ void parseDeltaUpdate(JsonArray arr) {
           Serial.print("Received nozzle_temper delta update. New temp: ");
           Serial.println(newNozzleTemp);
       }
+      // --- Found bed target temp! ---
+      else if (strcmp(nodeName, "bed_target_temper") == 0) {
+          newBedTargetTemp = node["value"] | current_bed_target_temp;
+          Serial.print("Received bed_target_temper delta update. New temp: ");
+          Serial.println(newBedTargetTemp);
+      }
+      // --- Found nozzle target temp! ---
+      else if (strcmp(nodeName, "nozzle_target_temper") == 0) {
+          newNozzleTargetTemp = node["value"] | current_nozzle_target_temp;
+          Serial.print("Received nozzle_target_temper delta update. New temp: ");
+          Serial.println(newNozzleTargetTemp);
+      }
       // --- Found gcode_state! ---
       else if (strcmp(nodeName, "gcode_state") == 0) {
           newGcodeState = node["value"] | current_gcode_state.c_str();
@@ -1560,6 +1666,12 @@ void parseDeltaUpdate(JsonArray arr) {
           Serial.print("Received print_percentage delta update. New value: ");
           Serial.println(newPrintPercentage);
       }
+      // --- Found time_remaining! ---
+      else if (strcmp(nodeName, "mc_remaining_time") == 0) {
+          newTimeRemaining = node["value"] | current_time_remaining;
+          Serial.print("Received mc_remaining_time delta update. New value: ");
+          Serial.println(newTimeRemaining);
+      }
       // --- Found wifi_signal! ---
       else if (strcmp(nodeName, "wifi_signal") == 0) {
           newWifiSignal = node["value"] | current_wifi_signal.c_str();
@@ -1570,13 +1682,13 @@ void parseDeltaUpdate(JsonArray arr) {
 
   // --- Call the state updater ---
   // This function is now called *after* the loop, so it batches all delta changes
-  updatePrinterState(newGcodeState, newPrintPercentage, newChamberLightMode, newBedTemp, newNozzleTemp, newWifiSignal);
+  updatePrinterState(newGcodeState, newPrintPercentage, newChamberLightMode, newBedTemp, newNozzleTemp, newWifiSignal, newBedTargetTemp, newNozzleTargetTemp, newTimeRemaining);
 }
 // --- END UPDATED function ---
 
 
 // --- UPDATED: Centralized function to update state and lights ---
-void updatePrinterState(String gcodeState, int printPercentage, String chamberLightMode, float bedTemp, float nozzleTemp, String wifiSignal) {
+void updatePrinterState(String gcodeState, int printPercentage, String chamberLightMode, float bedTemp, float nozzleTemp, String wifiSignal, float bedTargetTemp, float nozzleTargetTemp, int timeRemaining) { // <-- UPDATED
 
   // --- 1. Manage Finish Timer ---
   // Check for state *change* to FINISH
@@ -1596,7 +1708,10 @@ void updatePrinterState(String gcodeState, int printPercentage, String chamberLi
   current_light_mode = chamberLightMode;
   current_bed_temp = bedTemp;
   current_nozzle_temp = nozzleTemp;
-  current_wifi_signal = wifiSignal; // <-- NEW
+  current_bed_target_temp = bedTargetTemp;
+  current_nozzle_target_temp = nozzleTargetTemp;
+  current_time_remaining = timeRemaining; // <-- NEW
+  current_wifi_signal = wifiSignal;
   current_error_state = (gcodeState == "FAILED" || gcodeState == "STOP");
 
   // --- 3. External Light Auto Logic ---
