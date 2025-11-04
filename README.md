@@ -37,7 +37,7 @@ The device hosts a full web interface for live status monitoring, manual control
     *  **Time Syncing:** Uses an NTP server and configurable timezones to provide accurate timestamps in the logs.
 
 ## 🔌 Hardware Requirements & Wiring
-![alt text](https://github.com/eddwatts/BambuLED/blob/cac9d39bbcf56d1ea5791caa86140b1191a1bf79/esp32.jpg "ESP32 S3 N16R8") 
+![alt text](https://github.com/eddwatts/BambuLED/blob/cac9d39bbcf56d1ea5791caa86140b1191a1bf79/esp32.png "ESP32 S3 N16R8") 
 * **ESP32 Module:** This project is memory-intensive. **A board with 8MB or 16MB of Flash (N8 or N16) and 8MB of PSRAM (R8), such as an ESP32-S3-N8R8 or ESP32-S3-N16R8, is highly recommended.**
     *  **Why 8MB (N8) or 16MB Flash (N16)?** The large flash provides ample space for the application, the LittleFS file system , and Over-the-Air (OTA) updates, which requires partitions large enough to hold two full copies of the firmware.
     *  **Why 8MB PSRAM (R8)?** The code uses `WiFiClientSecure` (SSL) and parses large (4KB+) JSON payloads from MQTT.  The firmware is **optimized to use this external PSRAM** to store the MQTT message history, which prevents "Out of Memory" crashes and ensures stability. A standard ESP32 without PSRAM may be unstable.
