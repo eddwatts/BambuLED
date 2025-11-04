@@ -27,7 +27,7 @@ const int DEFAULT_CHAMBER_LIGHT_PIN = 14; // <-- YOUR FIX
 const int LED_PIN_CONST = LED_DATA_PIN; // Used for status display in non-template code
 // -----------------------------------------------------------------
 
-const int DEFAULT_NUM_LEDS = 18;
+const int DEFAULT_NUM_LEDS = 10;
 #define MAX_LEDS 60 // Maximum number of LEDs supported by the global array
 
 // --- JSON Configuration Structure and Defaults ---
@@ -64,6 +64,9 @@ struct Config {
   // --- NEW: Time settings ---
   char ntp_server[60];
   char timezone[50];
+
+  // --- NEW: LED Color Order ---
+  char led_color_order[4]; // e.g. "GRB"
 };
 Config config;
 
@@ -77,6 +80,7 @@ WiFiManagerParameter custom_bbl_invert("invert", "Invert Light Logic (1=Active L
 WiFiManagerParameter custom_chamber_bright("chamber_bright", "External Light Brightness (0-100%)", "", 5, "type='number' min='0' max='100'"); // Value set later
 WiFiManagerParameter custom_chamber_finish_timeout("chamber_timeout", "Enable 2-Min Finish Timeout (Light OFF)", "", 2, "type='checkbox' value='1'"); // Value set later
 WiFiManagerParameter custom_num_leds("numleds", "Number of WS2812B LEDs (Max 60)", "", 5, "type='number' min='0' max='60'"); // Value set later
+WiFiManagerParameter custom_led_order("ledorder", "LED Color Order (e.g. GRB)", config.led_color_order, 4); // <-- NEW
 WiFiManagerParameter custom_idle_color("idle_color", "Idle Color (RRGGBB)", "", 7, "placeholder='000000'"); // Value set later
 WiFiManagerParameter custom_idle_bright("idle_bright", "Idle Brightness (0-255)", "", 5, "type='number' min='0' max='255'"); // Value set later
 WiFiManagerParameter custom_print_color("print_color", "Print Color (RRGGBB)", "", 7, "placeholder='FFFFFF'"); // Value set later
@@ -98,6 +102,7 @@ char custom_invert_param_buffer[2] = "0";
 char custom_chamber_bright_param_buffer[5] = "100";
 char custom_chamber_finish_timeout_param_buffer[2] = "1";
 char custom_num_leds_param_buffer[5] = "10";
+char custom_led_order_buffer[4] = "GRB"; // <-- NEW
 char custom_idle_color_param_buffer[7] = "000000";
 char custom_idle_bright_param_buffer[5] = "0";
 char custom_print_color_param_buffer[7] = "FFFFFF";
@@ -162,6 +167,7 @@ void saveConfigCallback();
 bool isValidGpioPin(int pin);
 String getTimestamp(); // <-- NEW
 String getTimezoneDropdown(String selectedTz); // <-- NEW
+String getLedOrderDropdown(String selectedOrder); // <-- NEW
 void handleRoot();
 void handleStatusJson(); // <-- NEW
 void update_leds();
@@ -244,6 +250,7 @@ void setup() {
     config.chamber_light_pin = DEFAULT_CHAMBER_LIGHT_PIN;
     strcpy(config.ntp_server, "pool.ntp.org"); // <-- NEW
     strcpy(config.timezone, "GMT0BST,M3.5.0/1,M10.5.0"); // <-- NEW (London)
+    strcpy(config.led_color_order, "GRB"); // <-- NEW
   }
   Serial.println("Configuration loaded.");
   yield();
@@ -268,6 +275,8 @@ void setup() {
   Serial.println(config.ntp_server); // <-- NEW
   Serial.print("Timezone: "); // <-- NEW
   Serial.println(config.timezone); // <-- NEW
+  Serial.print("LED Color Order: "); // <-- NEW
+  Serial.println(config.led_color_order); // <-- NEW
   Serial.println("------------------------------");
   yield();
 
@@ -292,7 +301,24 @@ void setup() {
       Serial.println(" LEDs.");
       
       yield(); // <-- NEW: Pat watchdog before FastLED init
-      FastLED.addLeds<WS2812B, LED_DATA_PIN, GRB>(leds, config.num_leds).setCorrection(TypicalLEDStrip);
+
+      // --- NEW: Use config.led_color_order to initialize FastLED ---
+      Serial.print("Setting LED Color Order to: ");
+      Serial.println(config.led_color_order);
+      if (strcmp(config.led_color_order, "RGB") == 0) {
+          FastLED.addLeds<WS2812B, LED_DATA_PIN, RGB>(leds, config.num_leds).setCorrection(TypicalLEDStrip);
+      } else if (strcmp(config.led_color_order, "BRG") == 0) {
+          FastLED.addLeds<WS2812B, LED_DATA_PIN, BRG>(leds, config.num_leds).setCorrection(TypicalLEDStrip);
+      } else if (strcmp(config.led_color_order, "GBR") == 0) {
+          FastLED.addLeds<WS2812B, LED_DATA_PIN, GBR>(leds, config.num_leds).setCorrection(TypicalLEDStrip);
+      } else { // Default to GRB
+          if (strcmp(config.led_color_order, "GRB") != 0) {
+              Serial.println("Unknown order, defaulting to GRB.");
+          }
+          FastLED.addLeds<WS2812B, LED_DATA_PIN, GRB>(leds, config.num_leds).setCorrection(TypicalLEDStrip);
+      }
+      // --- END NEW ---
+
       FastLED.clear();
       FastLED.show();
       Serial.println("FastLED OK.");
@@ -309,6 +335,7 @@ void setup() {
   snprintf(custom_chamber_bright_param_buffer, 5, "%d", config.chamber_pwm_brightness);
   strcpy(custom_chamber_finish_timeout_param_buffer, config.chamber_light_finish_timeout ? "1" : "0");
   snprintf(custom_num_leds_param_buffer, 5, "%d", config.num_leds);
+  snprintf(custom_led_order_buffer, 4, "%s", config.led_color_order); // <-- NEW
   snprintf(custom_idle_color_param_buffer, 7, "%06X", config.led_color_idle);
   snprintf(custom_idle_bright_param_buffer, 5, "%d", config.led_bright_idle);
   snprintf(custom_print_color_param_buffer, 7, "%06X", config.led_color_print);
@@ -328,6 +355,7 @@ void setup() {
   custom_chamber_bright.setValue(custom_chamber_bright_param_buffer, 5);
   custom_chamber_finish_timeout.setValue(custom_chamber_finish_timeout_param_buffer, 2);
   custom_num_leds.setValue(custom_num_leds_param_buffer, 5);
+  custom_led_order.setValue(custom_led_order_buffer, 4); // <-- NEW
   custom_idle_color.setValue(custom_idle_color_param_buffer, 7);
   custom_idle_bright.setValue(custom_idle_bright_param_buffer, 5);
   custom_print_color.setValue(custom_print_color_param_buffer, 7);
@@ -384,6 +412,7 @@ void setup() {
   wm.addParameter(&custom_chamber_finish_timeout);
   wm.addParameter(&p_led_heading);
   wm.addParameter(&custom_num_leds);
+  wm.addParameter(&custom_led_order); // <-- NEW
   wm.addParameter(&p_led_info);
   wm.addParameter(&p_led_idle_heading);
   wm.addParameter(&custom_idle_color);
@@ -1094,6 +1123,7 @@ void handleConfig() {
       }
     }
     tempConfig.led_finish_timeout = server.hasArg("led_finish_timeout");
+    if (server.hasArg("led_color_order")) strlcpy(tempConfig.led_color_order, server.arg("led_color_order").c_str(), sizeof(tempConfig.led_color_order)); // <-- NEW
 
     // --- Parse LED Colors (convert hex string to uint32_t) ---
     // Use strtoul for robust hex conversion
@@ -1206,11 +1236,18 @@ void handleConfig() {
 
     // --- LED Status Bar ---
     html += "<h2>LED Status Bar Settings</h2>";
-    html += "<div><label for='numleds'>Number of WS2812B LEDs (Max 60)</label><input type='number' id='numleds' name='numleds' min='0' max='";
+    html += "<div class='grid'>"; // <-- NEW GRID
+    html += "<div class='card'><div><label for='numleds'>Number of WS2812B LEDs (Max 60)</label><input type='number' id='numleds' name='numleds' min='0' max='";
     html += String(MAX_LEDS);
     html += "' value='";
     html += String(config.num_leds);
-    html += "'></div>";
+    html += "'></div></div>";
+
+    // --- NEW: LED Color Order Dropdown ---
+    html += "<div class='card'><div><label for='led_color_order'>LED Color Order</label>";
+    html += getLedOrderDropdown(String(config.led_color_order));
+    html += "</div></div>";
+    html += "</div>"; // <-- END GRID
 
     html += "<div><small>LED Data Pin is hardcoded to GPIO ";
     html += String(LED_PIN_CONST);
@@ -1469,6 +1506,7 @@ bool saveConfig() {
   doc["chamber_light_finish_timeout"] = config.chamber_light_finish_timeout;
 
   doc["num_leds"] = config.num_leds;
+  doc["led_color_order"] = config.led_color_order; // <-- NEW
   doc["led_color_idle"] = config.led_color_idle;
   doc["led_color_print"] = config.led_color_print;
   doc["led_color_pause"] = config.led_color_pause;
@@ -1548,6 +1586,7 @@ bool loadConfig() {
   tempConfig.chamber_light_finish_timeout = doc["chamber_light_finish_timeout"] | config.chamber_light_finish_timeout;
 
   tempConfig.num_leds = doc["num_leds"] | config.num_leds;
+  strlcpy(tempConfig.led_color_order, doc["led_color_order"] | "GRB", sizeof(tempConfig.led_color_order)); // <-- NEW
   tempConfig.led_color_idle = doc["led_color_idle"] | config.led_color_idle;
   tempConfig.led_color_print = doc["led_color_print"] | config.led_color_print;
   tempConfig.led_color_pause = doc["led_color_pause"] | config.led_color_pause;
@@ -1616,6 +1655,8 @@ void saveConfigCallback() {
       Serial.println("WARNING: Invalid LED count entered. Disabling LEDs (setting to 0).");
       tempConfig.num_leds = 0;
   }
+
+  strlcpy(tempConfig.led_color_order, custom_led_order.getValue(), sizeof(tempConfig.led_color_order)); // <-- NEW
 
   // Use strtoul for robust hex conversion
   tempConfig.led_color_idle = strtoul(custom_idle_color.getValue(), NULL, 16);
@@ -2074,6 +2115,40 @@ String getTimezoneDropdown(String selectedTz) {
   // Add the currently saved one if it's not in the list (custom)
   if (html.indexOf("selected") == -1) {
      addOption(selectedTz.c_str(), "(Custom)");
+  }
+
+  html += "</select>";
+  return html;
+}
+
+// --- NEW: Helper function to build the LED Color Order dropdown ---
+String getLedOrderDropdown(String selectedOrder) {
+  String html = "<select id='led_color_order' name='led_color_order'>";
+  
+  // Helper to add <option>
+  auto addOption = [&](const char* order, const char* name) {
+    html += "<option value='";
+    html += order;
+    html += "'";
+    if (selectedOrder == order) {
+      html += " selected";
+    }
+    html += ">";
+    html += name;
+    html += "</option>";
+  };
+
+  // Add common color orders
+  addOption("GRB", "GRB (Most Common WS2812B)");
+  addOption("RGB", "RGB");
+  addOption("BRG", "BRG");
+  addOption("GBR", "GBR");
+  addOption("RBG", "RBG");
+  addOption("BGR", "BGR");
+
+  // Add the currently saved one if it's not in the list (custom)
+  if (html.indexOf("selected") == -1) {
+     addOption(selectedOrder.c_str(), "(Custom)");
   }
 
   html += "</select>";
