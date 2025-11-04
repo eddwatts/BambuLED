@@ -9,14 +9,17 @@
 #include "LittleFS.h" // For ESP32 file system support
 #include <FastLED.h>
 #include <driver/ledc.h> // For PWM functions
-// #include <ESPmDNS.h> // For OTA - REMOVED FOR SPACE
-// #include <ArduinoOTA.h> // For OTA updates - REMOVED FOR SPACE
+#include <ESPmDNS.h> // <-- RE-ENABLED FOR OTA
+#include <ArduinoOTA.h> // <-- RE-ENABLED FOR OTA
+#include <deque> // <-- NEW: For MQTT history
+#include <time.h> // <-- NEW: For NTP Time
 
 // --- Configuration Pin Defaults ---
-const int DEFAULT_CHAMBER_LIGHT_PIN = 27;
+const int DEFAULT_CHAMBER_LIGHT_PIN = 14; // <-- YOUR FIX
 #define FORCE_RESET_PIN 16 // GPIO pin to ground for factory reset
 #define PWM_FREQ 5000 // 5kHz frequency for PWM
 #define PWM_RESOLUTION 8 // 8-bit resolution (0-255)
+// #define PWM_CHANNEL 0 // <-- REMOVED - Using v3 API
 
 // --- FASTLED CONSTANT (MUST BE A MACRO OR CONST EXPRESSION) ---
 // If you need to change the GPIO pin for the WS212B, you MUST change this value AND recompile.
@@ -57,6 +60,10 @@ struct Config {
 
   // LED Finish timeout toggle
   bool led_finish_timeout = true; // Enable 2-min timeout by default
+  
+  // --- NEW: Time settings ---
+  char ntp_server[60];
+  char timezone[50];
 };
 Config config;
 
@@ -81,9 +88,12 @@ WiFiManagerParameter custom_error_bright("error_bright", "Error Brightness (0-25
 WiFiManagerParameter custom_finish_color("finish_color", "Finish Color (RRGGBB)", "", 7, "placeholder='00FF00'"); // Value set later
 WiFiManagerParameter custom_finish_bright("finish_bright", "Finish Brightness (0-255)", "", 5, "type='number' min='0' max='255'"); // Value set later
 WiFiManagerParameter custom_led_finish_timeout("led_finish_timeout", "Enable 2-Min Finish Timeout (LEDs)", "", 2, "type='checkbox' value='1'"); // Value set later
+WiFiManagerParameter custom_ntp_server("ntp", "NTP Server", config.ntp_server, 60); // <-- NEW
+WiFiManagerParameter custom_timezone("tz", "Timezone (TZ String)", config.timezone, 50); // <-- NEW
+
 
 // Buffers to hold the actual values for the parameters (needed because getValue() returns const char*)
-char custom_pin_param_buffer[5] = "27";
+char custom_pin_param_buffer[5] = "14"; // <-- YOUR FIX
 char custom_invert_param_buffer[2] = "0";
 char custom_chamber_bright_param_buffer[5] = "100";
 char custom_chamber_finish_timeout_param_buffer[2] = "1";
@@ -99,6 +109,8 @@ char custom_error_bright_param_buffer[5] = "150";
 char custom_finish_color_param_buffer[7] = "00FF00";
 char custom_finish_bright_param_buffer[5] = "100";
 char custom_led_finish_timeout_param_buffer[2] = "1";
+char custom_ntp_buffer[60] = "pool.ntp.org"; // <-- NEW
+char custom_tz_buffer[50] = "GMT0BST,M3.5.0/1,M10.5.0"; // <-- NEW (London w/ DST)
 
 
 // --- MQTT & JSON Globals ---
@@ -114,6 +126,7 @@ String mqtt_topic_status;
 WebServer server(80);
 String current_light_mode = "UNKNOWN"; // Bambu's internal light status
 bool manual_light_control = false; // Flag for manual override
+bool external_light_is_on = false; // <-- NEW: Software state tracking
 // LED Globals
 CRGB leds[MAX_LEDS]; // Array to hold LED color values
 int current_print_percentage = 0;
@@ -123,9 +136,11 @@ float current_bed_temp = 0.0;
 float current_nozzle_temp = 0.0;
 float current_bed_target_temp = 0.0;
 float current_nozzle_target_temp = 0.0;
-int current_time_remaining = 0; // <-- NEW: in seconds
+int current_time_remaining = 0;
+int current_layer = 0; // <-- NEW
 String current_wifi_signal = "N/A";
-String last_mqtt_json = "No data received yet.";
+std::deque<String> mqtt_history; // <-- NEW: Replaces last_mqtt_json
+const int MAX_HISTORY_SIZE = 100; // <-- NEW: Max history to keep
 File restoreFile;
 bool restoreSuccess = false;
 
@@ -145,11 +160,13 @@ bool loadConfig();
 bool saveConfig();
 void saveConfigCallback();
 bool isValidGpioPin(int pin);
+String getTimestamp(); // <-- NEW
+String getTimezoneDropdown(String selectedTz); // <-- NEW
 void handleRoot();
 void handleStatusJson(); // <-- NEW
 void update_leds();
 void setup_chamber_light_pwm(int pin);
-// void setup_ota(); // REMOVED FOR SPACE
+void setup_ota(); // <-- RE-ENABLED
 void set_chamber_light_state(bool lightShouldBeOn);
 void handleLightOn();
 void handleLightOff();
@@ -162,7 +179,7 @@ void handleRestoreUpload();
 void handleRestoreReboot();
 void parseFullReport(JsonObject doc);
 void parseDeltaUpdate(JsonArray arr);
-void updatePrinterState(String gcodeState, int printPercentage, String chamberLightMode, float bedTemp, float nozzleTemp, String wifiSignal, float bedTargetTemp, float nozzleTargetTemp, int timeRemaining); // <-- UPDATED
+void updatePrinterState(String gcodeState, int printPercentage, String chamberLightMode, float bedTemp, float nozzleTemp, String wifiSignal, float bedTargetTemp, float nozzleTargetTemp, int timeRemaining, int layerNum); // <-- UPDATED
 
 // -----------------------------------------------------
 
@@ -193,6 +210,18 @@ void setup() {
   Serial.println("LittleFS mounted.");
   yield();
 
+  // --- NEW: Check for PSRAM ---
+  if(psramFound()){
+    Serial.printf("PSRAM found! Total: %u, Free: %u\n", ESP.getPsramSize(), ESP.getFreePsram());
+  } else {
+    Serial.println("No PSRAM found. MQTT history will be stored in internal RAM.");
+  }
+  // --- END NEW ---
+
+  // --- NEW: Add initial boot message to log ---
+  mqtt_history.push_back("[--:--:--] System Booted. Initializing...");
+  // --- END NEW ---
+
   // --- Handle Factory Reset Action ---
   if (forceReset) {
       Serial.println("Factory reset triggered!");
@@ -213,6 +242,8 @@ void setup() {
     strcpy(config.bbl_serial, "012345678900000");
     strcpy(config.bbl_access_code, "AABBCCDD");
     config.chamber_light_pin = DEFAULT_CHAMBER_LIGHT_PIN;
+    strcpy(config.ntp_server, "pool.ntp.org"); // <-- NEW
+    strcpy(config.timezone, "GMT0BST,M3.5.0/1,M10.5.0"); // <-- NEW (London)
   }
   Serial.println("Configuration loaded.");
   yield();
@@ -221,9 +252,9 @@ void setup() {
   if (config.chamber_light_pin == 25) {
     Serial.println("!!! WARNING: Invalid GPIO 25 detected in saved config.");
     Serial.println("!!! This pin conflicts with WiFi hardware.");
-    Serial.println("!!! Temporarily reverting to default pin 27 to allow boot.");
-    Serial.println("!!! Please use the /config page to save a valid pin (e.g., 27, 26, 12, 13, etc).");
-    config.chamber_light_pin = DEFAULT_CHAMBER_LIGHT_PIN; // Force to 27 in memory
+    Serial.println("!!! Temporarily reverting to default pin 14 to allow boot.");
+    Serial.println("!!! Please use the /config page to save a valid pin (e.g., 14, 26, 12, 13, etc).");
+    config.chamber_light_pin = DEFAULT_CHAMBER_LIGHT_PIN; // Force to 14 in memory
   }
   // --- END TEMPORARY FIX ---
 
@@ -233,6 +264,10 @@ void setup() {
   Serial.println(config.bbl_ip);
   Serial.print("Printer Serial: ");
   Serial.println(config.bbl_serial);
+  Serial.print("NTP Server: "); // <-- NEW
+  Serial.println(config.ntp_server); // <-- NEW
+  Serial.print("Timezone: "); // <-- NEW
+  Serial.println(config.timezone); // <-- NEW
   Serial.println("------------------------------");
   yield();
 
@@ -240,7 +275,7 @@ void setup() {
   Serial.print("Initializing Light Pin (PWM): ");
   Serial.println(config.chamber_light_pin);
   if (!isValidGpioPin(config.chamber_light_pin)) {
-      Serial.println("ERROR: Configured light pin is invalid or unsafe! Using default (27).");
+      Serial.printf("ERROR: Configured light pin (%d) is invalid! Using default (%d).\n", config.chamber_light_pin, DEFAULT_CHAMBER_LIGHT_PIN);
       config.chamber_light_pin = DEFAULT_CHAMBER_LIGHT_PIN;
   }
   setup_chamber_light_pwm(config.chamber_light_pin);
@@ -255,7 +290,8 @@ void setup() {
       Serial.print(" with ");
       Serial.print(config.num_leds);
       Serial.println(" LEDs.");
-
+      
+      yield(); // <-- NEW: Pat watchdog before FastLED init
       FastLED.addLeds<WS2812B, LED_DATA_PIN, GRB>(leds, config.num_leds).setCorrection(TypicalLEDStrip);
       FastLED.clear();
       FastLED.show();
@@ -284,6 +320,8 @@ void setup() {
   snprintf(custom_finish_color_param_buffer, 7, "%06X", config.led_color_finish);
   snprintf(custom_finish_bright_param_buffer, 5, "%d", config.led_bright_finish);
   strcpy(custom_led_finish_timeout_param_buffer, config.led_finish_timeout ? "1" : "0");
+  snprintf(custom_ntp_buffer, 60, "%s", config.ntp_server); // <-- NEW
+  snprintf(custom_tz_buffer, 50, "%s", config.timezone); // <-- NEW
 
   custom_bbl_pin.setValue(custom_pin_param_buffer, 5);
   custom_bbl_invert.setValue(custom_invert_param_buffer, 2);
@@ -301,6 +339,8 @@ void setup() {
   custom_finish_color.setValue(custom_finish_color_param_buffer, 7);
   custom_finish_bright.setValue(custom_finish_bright_param_buffer, 5);
   custom_led_finish_timeout.setValue(custom_led_finish_timeout_param_buffer, 2);
+  custom_ntp_server.setValue(custom_ntp_buffer, 60); // <-- NEW
+  custom_timezone.setValue(custom_tz_buffer, 50); // <-- NEW
   Serial.println("WiFiManager parameters set.");
   yield();
 
@@ -321,6 +361,7 @@ void setup() {
   wm.setSaveConfigCallback(saveConfigCallback);
 
   // --- Add Custom Parameters for Config ---
+  WiFiManagerParameter p_time_heading("<h2>Time Settings</h2>"); // <-- NEW
   WiFiManagerParameter p_light_heading("<h2>External Light Settings</h2>");
   WiFiManagerParameter p_led_heading("<h2>LED Status Bar Settings</h2>");
   WiFiManagerParameter p_led_info("<small><i>LED Data Pin is hardcoded to GPIO 4 for FastLED.</i></small>");
@@ -333,6 +374,9 @@ void setup() {
   wm.addParameter(&custom_bbl_ip);
   wm.addParameter(&custom_bbl_serial);
   wm.addParameter(&custom_bbl_access_code);
+  wm.addParameter(&p_time_heading); // <-- NEW
+  wm.addParameter(&custom_ntp_server); // <-- NEW
+  wm.addParameter(&custom_timezone); // <-- NEW
   wm.addParameter(&p_light_heading);
   wm.addParameter(&custom_bbl_pin);
   wm.addParameter(&custom_bbl_invert);
@@ -379,6 +423,14 @@ void setup() {
   Serial.println(WiFi.localIP());
   yield();
 
+  // --- NEW: Configure Time ---
+  Serial.println("Configuring time...");
+  configTime(0, 0, config.ntp_server); // First arg is useless, TZ string handles everything
+  setenv("TZ", config.timezone, 1);
+  tzset();
+  Serial.printf("Timezone set to: %s\n", config.timezone);
+  // --- END NEW ---
+
   // 8. Re-initialize pins in case they were changed in the portal
   int newLightPin = atoi(custom_bbl_pin.getValue());
   if (newLightPin != config.chamber_light_pin && isValidGpioPin(newLightPin)) {
@@ -388,11 +440,11 @@ void setup() {
       setup_chamber_light_pwm(config.chamber_light_pin);
   }
 
-  // 9. Setup OTA (Over-the-Air) Updates - REMOVED
-  // Serial.println("Setting up OTA...");
-  // setup_ota();
-  // Serial.println("OTA OK.");
-  // yield();
+  // 9. Setup OTA (Over-the-Air) Updates
+  Serial.println("Setting up OTA...");
+  setup_ota(); // <-- RE-ENABLED
+  Serial.println("OTA OK.");
+  yield();
 
   // 10. Setup MQTT and Callback
   Serial.println("Setting up MQTT...");
@@ -422,7 +474,7 @@ void setup() {
 
 void loop() {
   // OTA must be handled in the main loop
-  // ArduinoOTA.handle(); // REMOVED FOR SPACE
+  ArduinoOTA.handle(); // <-- RE-ENABLED
 
   // Handle web client requests
   server.handleClient();
@@ -440,16 +492,18 @@ void loop() {
   }
 
   // --- Non-blocking Timer Logic for External Light ---
-  if (!manual_light_control && config.chamber_light_finish_timeout &&
-      current_gcode_state == "FINISH" && finishTime > 0 &&
+  // This timer is the "master override" and must run regardless of gcode_state
+  if (config.chamber_light_finish_timeout && finishTime > 0 &&
       (millis() - finishTime > FINISH_LIGHT_TIMEOUT)) {
-
-      int pwm_duty = ledcRead(config.chamber_light_pin);
-      bool is_on = (config.invert_output) ? (pwm_duty < 255) : (pwm_duty > 0);
-      if (is_on) {
-          // Only print and turn off if it's currently on
-          // Serial.println("External Light: Finish timeout reached. Turning OFF."); // Too noisy for loop
-          set_chamber_light_state(false); // Turn light OFF
+      
+      if (external_light_is_on) { // If the light is on (and not in manual mode)
+          if (!manual_light_control) {
+              Serial.println("External Light: Finish timeout reached. Turning OFF via loop timer.");
+              set_chamber_light_state(false); // Turn light OFF
+          }
+          finishTime = 0; // Clear the timer
+      } else {
+          finishTime = 0; // Timer expired, but light is already off, just clear the timer
       }
   }
 
@@ -474,7 +528,7 @@ void loop() {
 // -----------------------------------------------------
 // --- OTA Setup Function ---
 
-/* // REMOVED FOR SPACE
+// --- RE-ENABLED OTA FUNCTION ---
 void setup_ota() {
   ArduinoOTA.setHostname("bambu-light-controller");
 
@@ -522,7 +576,8 @@ void setup_ota() {
   ArduinoOTA.begin();
   // Serial.println("OTA Ready. Hostname: bambu-light-controller"); // Already printed
 }
-*/
+// --- END RE-ENABLED OTA FUNCTION ---
+
 
 // -----------------------------------------------------
 // --- Validation & Web Status Functions ---
@@ -534,6 +589,17 @@ bool isValidGpioPin(int pin) {
     return true;
 }
 
+// --- NEW: Get formatted timestamp ---
+String getTimestamp() {
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    return "[--:--:--]";
+  }
+  char buffer[30];
+  strftime(buffer, sizeof(buffer), "[%Y-%m-%d %H:%M:%S]", &timeinfo);
+  return String(buffer);
+}
+
 
 // --- UPDATED: handleRoot() now serves a static page, JS does the work ---
 void handleRoot() {
@@ -543,14 +609,16 @@ void handleRoot() {
   String html = String("<!DOCTYPE html><html><head>");
   html += String("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
   html += String("<title>Bambu Light Status</title><style>");
-  html += String("body { font-family: Arial, sans-serif; margin: 20px; }");
-  html += String(".status { padding: 10px; margin-bottom: 10px; border-radius: 5px; transition: background-color 0.5s, border-color 0.5s; }"); // Added transition
-  html += String(".connected { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }");
-  html += String(".disconnected { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }");
-  html += String(".warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }");
-  html += String(".light-on { background-color: #cce5ff; color: #004085; border: 1px solid #b8daff; }");
-  html += String(".error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; font-weight: bold; }");
-  html += String("button { background-color: #007bff; color: white; padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; margin-right: 5px; margin-bottom: 5px; }");
+  html += String("body { font-family: Arial, sans-serif; margin: 20px; background-color: #1a1a1b; color: #e0e0e0; }");
+  html += String("h1, h2 { color: #ffffff; }");
+  html += String("a { color: #58a6ff; }");
+  html += String(".status { padding: 10px; margin-bottom: 10px; border-radius: 5px; transition: background-color 0.5s, border-color 0.5s; background-color: #2c2c2e; border: 1px solid #444; }"); // Added transition
+  html += String(".connected { background-color: #1a3a24; color: #8cda9b; border: 1px solid #336d3f; }");
+  html += String(".disconnected { background-color: #401f22; color: #f0989f; border: 1px solid #7c333a; }");
+  html += String(".warning { background-color: #423821; color: #f0d061; border: 1px solid #7e6c33; }");
+  html += String(".light-on { background-color: #1c314a; color: #9cc2ef; border: 1px solid #335d88; }");
+  html += String(".error { background-color: #401f22; color: #f0989f; border: 1px solid #7c333a; font-weight: bold; }");
+  html += String("button { background-color: #378cf0; color: #ffffff; padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; margin-right: 5px; margin-bottom: 5px; }");
   html += String("button.off { background-color: #6c757d; } button.auto { background-color: #28a745; }");
   html += String("span.data { font-weight: normal; }"); // Class for the data part
   html += String("</style></head><body><h1>Bambu Chamber Light Controller</h1>");
@@ -566,14 +634,15 @@ void handleRoot() {
   // --- MQTT Status (Live) ---
   html += String("<div id=\"mqtt-status-div\" class=\"status disconnected\">"); // Start as disconnected
   html += String("<strong>MQTT Status:</strong> <span id=\"mqtt-status\" class=\"data\">DISCONNECTED</span>");
-  html += String(" | <a href=\"/mqtt\" target=\"_blank\">View Last JSON</a>");
+  html += String(" | <a href=\"/mqtt\" target=\"_blank\">View MQTT History</a>"); // <-- UPDATED TEXT
   html += String("</div>");
 
   // --- Printer Status (Live) ---
   html += String("<h2>Printer Status</h2>");
   html += String("<p><strong>GCODE State:</strong> <span id=\"gcode-state\" class=\"data\">N/A</span></p>");
   html += String("<p><strong>Print Percentage:</strong> <span id=\"print-percent\" class=\"data\">0 %</span></p>");
-  html += String("<p><strong>Time Remaining:</strong> <span id=\"print-time\" class=\"data\">--:--:--</span></p>"); // <-- NEW
+  html += String("<p><strong>Current Layer:</strong> <span id=\"layer-num\" class=\"data\">0</span></p>"); // <-- NEW
+  html += String("<p><strong>Time Remaining:</strong> <span id=\"print-time\" class=\"data\">--:--:--</span></p>");
   html += String("<p><strong>Nozzle Temp:</strong> <span id=\"nozzle-temp\" class=\"data\">0.0 / 0.0 &deg;C</span></p>");
   html += String("<p><strong>Bed Temp:</strong> <span id=\"bed-temp\" class=\"data\">0.0 / 0.0 &deg;C</span></p>");
   html += String("<p><strong>Printer WiFi Signal:</strong> <span id=\"wifi-signal\" class=\"data\">N/A</span></p>");
@@ -591,7 +660,18 @@ void handleRoot() {
   html += String("<div id=\"led-status-div\" class=\"status disconnected\">");
   html += String("<strong>LED Status Bar (Pin ") + String(LED_PIN_CONST) + String(" / ") + String(config.num_leds) + String(" LEDs):</strong> ");
   html += String("<span id=\"led-status\" class=\"data\">N/A</span>");
-  html += String("<small>Data Pin is hardcoded to GPIO ") + String(LED_PIN_CONST) + String(" for FastLED compatibility.</small></div>");
+  
+  // --- NEW: Live Virtual LED Bar ---
+  html += String("<div id='virtual-bar-container' style='margin-top: 10px;'>");
+  html += String("<div id='virtual-bar' style='display: flex; width: 100%; height: 20px; background: #222; border-radius: 5px; overflow: hidden; border: 1px solid #444;'>");
+  // Add virtual LEDs based on config
+  for(int i=0; i < config.num_leds && i < MAX_LEDS; i++) {
+    html += "<div class='vled' style='flex-grow: 1; height: 100%; transition: background-color 0.5s, opacity 0.5s;'></div>";
+  }
+  html += String("</div></div>"); // end virtual-bar and container
+  // --- END NEW ---
+
+  html += String("<br><small>Data Pin is hardcoded to GPIO ") + String(LED_PIN_CONST) + String(" for FastLED compatibility.</small></div>");
 
   // --- Manual Control (Static) ---
   html += String("<h2>Manual Control</h2>");
@@ -625,6 +705,7 @@ void handleRoot() {
   // Printer Status
   html += String("document.getElementById('gcode-state').innerText = data.gcode_state;");
   html += String("document.getElementById('print-percent').innerText = data.print_percentage + ' %';");
+  html += String("document.getElementById('layer-num').innerText = data.layer_num;"); // <-- NEW
   html += String("document.getElementById('print-time').innerText = formatTime(data.time_remaining);");
   html += String("document.getElementById('nozzle-temp').innerHTML = data.nozzle_temp.toFixed(1) + ' / ' + data.nozzle_target_temp.toFixed(1) + ' &deg;C';");
   html += String("document.getElementById('bed-temp').innerHTML = data.bed_temp.toFixed(1) + ' / ' + data.bed_target_temp.toFixed(1) + ' &deg;C';");
@@ -639,7 +720,33 @@ void handleRoot() {
   // LED Status
   html += String("document.getElementById('led-status').innerText = data.led_status_str;");
   html += String("document.getElementById('led-status-div').className = 'status ' + data.led_status_class;");
+
+  // --- NEW Virtual LED Bar Logic ---
+  html += String("let color = data.led_color_val.toString(16).padStart(6, '0');");
+  html += String("let brightness = data.led_bright_val;");
+  html += String("let opacity = (brightness / 255).toFixed(2);");
+  html += String("let vleds = document.querySelectorAll('#virtual-bar .vled');");
+  html += String("let numLeds = vleds.length;"); // Get count from rendered divs
   
+  html += String("if (data.is_printing && data.print_percentage > 0 && numLeds > 0) {");
+  html += String("  let leds_to_light = Math.ceil((data.print_percentage / 100) * numLeds);"); // Calculate based on actual led count
+  html += String("  for (let i = 0; i < numLeds; i++) {");
+  html += String("    if (i < leds_to_light) {");
+  html += String("      vleds[i].style.backgroundColor = '#' + color;");
+  html += String("      vleds[i].style.opacity = opacity;");
+  html += String("    } else {");
+  html += String("      vleds[i].style.backgroundColor = '#000';");
+  html += String("      vleds[i].style.opacity = '1.0';"); // Off LEDs are black
+  html += String("    }");
+  html += String("  }");
+  html += String("} else {");
+  html += String("  vleds.forEach(led => {"); // Solid color for all other states
+  html += String("    led.style.backgroundColor = '#' + color;");
+  html += String("    led.style.opacity = opacity;");
+  html += String("  });");
+  html += String("}");
+  // --- END Virtual LED Bar Logic ---
+
   html += String("} catch (e) { console.error('Error fetching status:', e); }");
   html += String("}");
   
@@ -668,6 +775,7 @@ void handleStatusJson() {
   doc["gcode_state"] = current_gcode_state;
   doc["print_percentage"] = current_print_percentage;
   doc["time_remaining"] = current_time_remaining;
+  doc["layer_num"] = current_layer; // <-- NEW
   doc["nozzle_temp"] = current_nozzle_temp;
   doc["nozzle_target_temp"] = current_nozzle_target_temp;
   doc["bed_temp"] = current_bed_temp;
@@ -675,22 +783,52 @@ void handleStatusJson() {
   doc["wifi_signal"] = current_wifi_signal;
 
   // Light Status
-  int pwm_duty = ledcRead(config.chamber_light_pin);
-  bool is_on = (config.invert_output) ? (pwm_duty < 255) : (pwm_duty > 0);
-  doc["light_is_on"] = is_on;
+  // int pwm_duty = ledcRead(config.chamber_light_pin); // <-- OLD
+  // bool is_on = (config.invert_output) ? (pwm_duty < 255) : (pwm_duty > 0); // <-- OLD
+  doc["light_is_on"] = external_light_is_on; // <-- NEW
   doc["chamber_bright"] = config.chamber_pwm_brightness;
   doc["manual_control"] = manual_light_control;
   doc["bambu_light_mode"] = current_light_mode;
   
   String light_mode_extra = "";
-  if (!manual_light_control && config.chamber_light_finish_timeout && current_gcode_state == "FINISH") {
-    if (finishTime > 0 && (millis() - finishTime < FINISH_LIGHT_TIMEOUT)) {
+  if (!manual_light_control && config.chamber_light_finish_timeout && finishTime > 0) {
+    if (millis() - finishTime < FINISH_LIGHT_TIMEOUT) {
       light_mode_extra = " (Finish light ON - timing out...)";
     } else {
       light_mode_extra = " (Finish light OFF - timeout complete)";
     }
   }
   doc["light_mode_extra"] = light_mode_extra;
+
+  // --- NEW: LED Status for Preview Bar ---
+  uint32_t current_color_val = config.led_color_idle;
+  int current_bright_val = config.led_bright_idle;
+  bool is_printing = false;
+
+  if (current_error_state) {
+      current_color_val = config.led_color_error;
+      current_bright_val = config.led_bright_error;
+  } else if (current_gcode_state == "PAUSED") {
+      current_color_val = config.led_color_pause;
+      current_bright_val = config.led_bright_pause;
+  } else if (current_gcode_state == "FINISH") {
+      bool timeout_enabled = config.led_finish_timeout;
+      bool timer_active = (finishTime > 0 && (millis() - finishTime < FINISH_LIGHT_TIMEOUT));
+      if (!timeout_enabled || timer_active) {
+          current_color_val = config.led_color_finish;
+          current_bright_val = config.led_bright_finish;
+      } else {
+          // Already set to idle defaults
+      }
+  } else if (current_print_percentage > 0 && current_gcode_state != "IDLE") {
+      current_color_val = config.led_color_print;
+      current_bright_val = config.led_bright_print;
+      is_printing = true; // Tell JS to render a progress bar
+  }
+  doc["led_color_val"] = current_color_val; // Send as a number
+  doc["led_bright_val"] = current_bright_val;
+  doc["is_printing"] = is_printing;
+  // --- END NEW ---
 
   // LED Status (re-using logic from handleRoot)
   String led_status_str;
@@ -740,12 +878,42 @@ void handleStatusJson() {
 // -----------------------------------------------------
 // --- Web Server Handlers for Manual Control ---
 
-// --- NEW HANDLER ---
+// --- UPDATED HANDLER ---
 void handleMqttJson() {
-  Serial.println("Web Request: /mqtt (View JSON)");
-  server.send(200, "application/json", last_mqtt_json);
+  Serial.println("Web Request: /mqtt (View JSON History)");
+  
+  String html = "<!DOCTYPE html><html><head><title>MQTT History</title>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+  html += "<style>";
+  html += "body{font-family:monospace;margin:20px;background:#1a1a1b;color:#e0e0e0;}";
+  html += "h1{color:#fff;font-family:Arial,sans-serif;}";
+  html += "p{font-family:Arial,sans-serif;}";
+  html += "pre{white-space:pre-wrap;word-wrap:break-word;font-size:0.9em;background:#2c2c2e;padding:10px;border-radius:5px;border:1px solid #444;}";
+  html += "a{color:#58a6ff;text-decoration:none;font-family:Arial,sans-serif;}";
+  html += "</style></head><body><h1>MQTT Message History</h1>";
+  html += "<p>Showing the last " + String(mqtt_history.size()) + " of " + String(MAX_HISTORY_SIZE) + " messages (oldest first).</p>";
+  html += "<a href='/'>&laquo; Back to Status</a><br><br>";
+
+  html += "<pre>";
+  if(mqtt_history.empty()) {
+    html += "No data received yet.";
+  } else {
+    // Iterate forwards (from oldest to newest)
+    for(auto it = mqtt_history.begin(); it != mqtt_history.end(); ++it) {
+      String msg = *it;
+      // Basic HTML escaping
+      msg.replace("<", "&lt;");
+      msg.replace(">", "&gt;");
+      html += msg + "\n"; // Add the log line and a newline
+    }
+  }
+  html += "</pre>";
+
+  html += "</body></html>";
+  server.send(200, "text/html", html);
 }
-// --- END NEW HANDLER ---
+// --- END UPDATED HANDLER ---
+
 
 // --- NEW: Backup and Restore Handlers ---
 void handleBackup() {
@@ -763,7 +931,11 @@ void handleBackup() {
 void handleRestorePage() {
   Serial.println("Web Request: GET /restore");
   String html = "<!DOCTYPE html><html><head><title>Restore Config</title>";
-  html += "<style>body{font-family:Arial,sans-serif;margin:20px;} button{background-color:#dc3545;color:white;padding:12px 20px;border:none;border-radius:5px;cursor:pointer;font-size:16px;}</style></head>";
+  html += "<style>body{font-family:Arial,sans-serif;margin:20px;background:#1a1a1b;color:#e0e0e0;}";
+  html += "h1{color:#fff;} p{color:#e0e0e0;}";
+  html += "button{background-color:#dc3545;color:white;padding:12px 20px;border:none;border-radius:5px;cursor:pointer;font-size:16px;}";
+  html += "a{color:#58a6ff;}";
+  html += "</style></head>";
   html += "<body><h1>Restore Configuration</h1>";
   html += "<p><b>WARNING:</b> This will overwrite your current settings and reboot the device.</p>";
   html += "<form action='/restore' method='POST' enctype='multipart/form-data'>";
@@ -817,7 +989,7 @@ void handleRestoreUpload() {
 void handleRestoreReboot() {
   if (restoreSuccess) {
     String html = "<!DOCTYPE html><html><head><title>Restore Complete</title>";
-    html += "<meta http-equiv='refresh' content='3;url=/'><style>body{font-family:Arial,sans-serif;}</style></head>";
+    html += "<meta http-equiv='refresh' content='3;url=/'><style>body{font-family:Arial,sans-serif;background:#1a1a1b;color:#e0e0e0;}</style></head>";
     html += "<body><h2>Restore Complete.</h2>";
     html += "<p>Device is rebooting to load new configuration. You will be redirected in 3 seconds...</p></body></html>";
     server.send(200, "text/html", html);
@@ -825,7 +997,7 @@ void handleRestoreReboot() {
     ESP.restart();
   } else {
     String html = "<!DOCTYPE html><html><head><title>Restore Failed</title>";
-    html += "<style>body{font-family:Arial,sans-serif;margin:20px;}</style></head>";
+    html += "<style>body{font-family:Arial,sans-serif;margin:20px;background:#1a1a1b;color:#e0e0e0;} a{color:#58a6ff;}</style></head>";
     html += "<body><h2>Restore Failed.</h2>";
     html += "<p>The file upload failed. This may be due to an invalid filename (must be 'config.json') or a file system error.</p>";
     html += "<a href='/restore'>Try again</a> | <a href='/'>Back to Status</a></body></html>";
@@ -859,13 +1031,19 @@ void handleLightAuto() {
   bool lightShouldBeOn = (current_light_mode == "on" || current_light_mode == "flashing");
   bool finalLightState = lightShouldBeOn; // Default
 
-  if (current_gcode_state == "FINISH" && config.chamber_light_finish_timeout) {
-      if (finishTime > 0 && (millis() - finishTime < FINISH_LIGHT_TIMEOUT)) {
-          finalLightState = true; // Timer active, force ON
+  // --- UPDATED TIMER CHECK ---
+  // Check for timer override
+  if (config.chamber_light_finish_timeout && finishTime > 0) {
+      if (millis() - finishTime < FINISH_LIGHT_TIMEOUT) {
+          // Timer is active, force light ON
+          finalLightState = true;
       } else {
-          finalLightState = false; // Timer expired, force OFF
+          // Timer has expired, force light OFF
+          finalLightState = false;
       }
   }
+  // --- END UPDATED ---
+
   set_chamber_light_state(finalLightState);
 
   server.sendHeader("Location", "/");
@@ -887,6 +1065,10 @@ void handleConfig() {
     if (server.hasArg("ip")) strlcpy(tempConfig.bbl_ip, server.arg("ip").c_str(), sizeof(tempConfig.bbl_ip));
     if (server.hasArg("serial")) strlcpy(tempConfig.bbl_serial, server.arg("serial").c_str(), sizeof(tempConfig.bbl_serial));
     if (server.hasArg("code")) strlcpy(tempConfig.bbl_access_code, server.arg("code").c_str(), sizeof(tempConfig.bbl_access_code));
+
+    // --- NEW: Parse Time Settings ---
+    if (server.hasArg("ntp_server")) strlcpy(tempConfig.ntp_server, server.arg("ntp_server").c_str(), sizeof(tempConfig.ntp_server));
+    if (server.hasArg("timezone")) strlcpy(tempConfig.timezone, server.arg("timezone").c_str(), sizeof(tempConfig.timezone));
 
     // --- Parse External Light Settings ---
     if (server.hasArg("lightpin")) {
@@ -934,7 +1116,7 @@ void handleConfig() {
 
     // Send a response page and then reboot
     String html = "<!DOCTYPE html><html><head><title>Saving...</title>";
-    html += "<meta http-equiv='refresh' content='3;url=/'><style>body{font-family:Arial,sans-serif;}</style></head>";
+    html += "<meta http-equiv='refresh' content='3;url=/'><style>body{font-family:Arial,sans-serif;background:#1a1a1b;color:#e0e0e0;}</style></head>";
     html += "<body><h2>Configuration Saved.</h2>";
     html += "<p>Device is rebooting to apply settings. You will be redirected in 3 seconds...</p></body></html>";
     server.send(200, "text/html", html);
@@ -956,155 +1138,167 @@ void handleConfig() {
     String html = "<!DOCTYPE html><html><head>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
     html += "<title>Bambu Light Config</title><style>";
-    html += "body{font-family:Arial,sans-serif;margin:20px;background:#f4f4f4;}";
-    html += "h1,h2,h3{color:#333;} h2{border-bottom:2px solid #007bff;padding-bottom:5px;}";
-    html += "form{background:#fff;padding:20px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);}";
-    html += "div{margin-bottom:15px;} label{display:block;margin-bottom:5px;font-weight:bold;color:#555;}";
-    html += "input[type='text'],input[type='number'],input[type='password']{width:95%;padding:8px;border:1px solid #ccc;border-radius:4px;}";
-    html += "input[type='checkbox']{margin-right:10px;}";
-    html += "button{background-color:#007bff;color:white;padding:12px 20px;border:none;border-radius:5px;cursor:pointer;font-size:16px;}";
+    html += "body{font-family:Arial,sans-serif;margin:20px;background:#1a1a1b;color:#e0e0e0;}";
+    html += "h1,h2,h3{color:#fff;} h2{border-bottom:2px solid #378cf0;padding-bottom:5px;}";
+    html += "form{background:#2c2c2e;padding:20px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);}";
+    html += "div{margin-bottom:15px;} label{display:block;margin-bottom:5px;font-weight:bold;color:#ccc;}";
+    html += "input[type='text'],input[type='number'],input[type='password'],select{width:98%;padding:8px;border:1px solid #555;border-radius:4px;font-family:Arial,sans-serif;font-size:1em;background-color:#3a3a3c;color:#e0e0e0;}"; // <-- UPDATED STYLE
+    html += "input[type='checkbox']{margin-right:10px;vertical-align:middle;}";
+    html += "label[for='invert'], label[for='chamber_timeout'], label[for='led_finish_timeout'] { display:inline-block;font-weight:normal; }"; // Fix checkbox label alignment
+    html += "button{background-color:#378cf0;color:#ffffff;padding:12px 20px;border:none;border-radius:5px;cursor:pointer;font-size:16px;}";
     html += "button:hover{background-color:#0056b3;}";
-    html += ".color-input{width:100px;padding:8px;vertical-align:middle;margin-left:10px;}";
+    html += ".color-input{width:100px;padding:8px;vertical-align:middle;margin-left:10px;border:1px solid #555;}";
     html += ".grid{display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));grid-gap:20px;}";
-    html += ".card{background:#fff;padding:15px;border-radius:5px;border:1px solid #eee;}";
-    html += "small{color:#666;}";
+    html += ".card{background:#3a3a3c;padding:15px;border-radius:5px;border:1px solid #555;}";
+    html += "small{color:#aaa;}";
+    html += "a{color:#58a6ff;}";
+    html += ".color-swatch{width: 20px; height: 20px; display: inline-block; vertical-align: middle; margin-left: 10px; border: 1px solid #555; border-radius: 4px; background-color: #000;}"; // <-- NEW
     html += "</style></head><body><h1>Bambu Light Controller Settings</h1>";
     html += "<p><small>To change Wi-Fi, use the 'Factory Reset' pin (GPIO 16) on boot.</small></p>";
     html += "<form action='/config' method='POST'>";
 
     // --- Printer Settings ---
     html += "<h2>Printer Settings</h2>";
-    // html += "<div><label for='ip'>Bambu Printer IP</label><input type='text' id='ip' name='ip' value='" + String(config.bbl_ip) + "'></div>"; // OLD
     html += "<div><label for='ip'>Bambu Printer IP</label><input type='text' id='ip' name='ip' value='";
     html += String(config.bbl_ip);
     html += "'></div>";
     
-    // html += "<div><label for='serial'>Printer Serial</label><input type='text' id='serial' name='serial' value='" + String(config.bbl_serial) + "'></div>"; // OLD
     html += "<div><label for='serial'>Printer Serial</label><input type='text' id='serial' name='serial' value='";
     html += String(config.bbl_serial);
     html += "'></div>";
 
-    // html += "<div><label for='code'>Access Code (MQTT Pass)</label><input type='password' id='code' name='code' value='" + String(config.bbl_access_code) + "'></div>"; // OLD
     html += "<div><label for='code'>Access Code (MQTT Pass)</label><input type='password' id='code' name='code' value='";
     html += String(config.bbl_access_code);
     html += "'></div>";
 
+    // --- NEW: Time Settings ---
+    html += "<h2>Time Settings</h2>";
+    html += "<div class='grid'>";
+    html += "<div class='card'><div><label for='ntp_server'>NTP Server</label><input type='text' id='ntp_server' name='ntp_server' value='";
+    html += String(config.ntp_server);
+    html += "'></div></div>";
+    html += "<div class='card'><div><label for='timezone'>Timezone</label>";
+    html += getTimezoneDropdown(String(config.timezone));
+    html += "</div></div>";
+    html += "</div>";
+    // --- END NEW ---
 
     // --- External Light ---
     html += "<h2>External Light Settings</h2>";
     html += "<div class='grid'>";
-    // html += "<div class='card'><div><label for='lightpin'>External Light GPIO Pin</label><input type='number' id='lightpin' name='lightpin' min='0' max='39' value='" + String(config.chamber_light_pin) + "'></div>"; // OLD
     html += "<div class='card'><div><label for='lightpin'>External Light GPIO Pin</label><input type='number' id='lightpin' name='lightpin' min='0' max='39' value='";
     html += String(config.chamber_light_pin);
     html += "'></div>";
     
-    // html += "<div><label for='chamber_bright'>Brightness (0-100%)</label><input type='number' id='chamber_bright' name='chamber_bright' min='0' max='100' value='" + String(config.chamber_pwm_brightness) + "'></div></div>"; // OLD
     html += "<div><label for='chamber_bright'>Brightness (0-100%)</label><input type='number' id='chamber_bright' name='chamber_bright' min='0' max='100' value='";
     html += String(config.chamber_pwm_brightness);
     html += "'></div></div>";
 
-    // html += "<div class='card'><div><input type='checkbox' id='invert' name='invert' value='1' " + (config.invert_output ? "checked" : "") + "><label for='invert' style='display:inline;'>Invert Light Logic (Active LOW)</label></div>"; // OLD
     html += "<div class='card'><div><input type='checkbox' id='invert' name='invert' value='1' ";
     html += (config.invert_output ? "checked" : "");
-    html += "><label for='invert' style='display:inline;'>Invert Light Logic (Active LOW)</label></div>";
+    html += "><label for='invert'>Invert Light Logic (Active LOW)</label></div>";
     
-    // html += "<div><input type='checkbox' id='chamber_timeout' name='chamber_timeout' value='1' " + (config.chamber_light_finish_timeout ? "checked" : "") + "><label for='chamber_timeout' style='display:inline;'>Enable 2-Min Finish Timeout (Light OFF)</label></div></div>"; // OLD
     html += "<div><input type='checkbox' id='chamber_timeout' name='chamber_timeout' value='1' ";
     html += (config.chamber_light_finish_timeout ? "checked" : "");
-    html += "><label for='chamber_timeout' style='display:inline;'>Enable 2-Min Finish Timeout (Light OFF)</label></div></div>";
+    html += "><label for='chamber_timeout'>Enable 2-Min Finish Timeout (Light OFF)</label></div></div>";
 
     html += "</div>";
 
     // --- LED Status Bar ---
     html += "<h2>LED Status Bar Settings</h2>";
-    // html += "<div><label for='numleds'>Number of WS2812B LEDs (Max 60)</label><input type='number' id='numleds' name='numleds' min='0' max='" + String(MAX_LEDS) + "' value='" + String(config.num_leds) + "'></div>"; // OLD
     html += "<div><label for='numleds'>Number of WS2812B LEDs (Max 60)</label><input type='number' id='numleds' name='numleds' min='0' max='";
     html += String(MAX_LEDS);
     html += "' value='";
     html += String(config.num_leds);
     html += "'></div>";
 
-    // html += "<div><small>LED Data Pin is hardcoded to GPIO " + String(LED_PIN_CONST) + " for FastLED.</small></div>"; // OLD
     html += "<div><small>LED Data Pin is hardcoded to GPIO ";
     html += String(LED_PIN_CONST);
     html += " for FastLED.</small></div>";
     
-    // html += "<div><input type='checkbox' id='led_finish_timeout' name='led_finish_timeout' value='1' " + (config.led_finish_timeout ? "checked" : "") + "><label for='led_finish_timeout' style='display:inline;'>Enable 2-Min Finish Timeout (LEDs return to Idle)</label></div>"; // OLD
     html += "<div><input type='checkbox' id='led_finish_timeout' name='led_finish_timeout' value='1' ";
     html += (config.led_finish_timeout ? "checked" : "");
-    html += "><label for='led_finish_timeout' style='display:inline;'>Enable 2-Min Finish Timeout (LEDs return to Idle)</label></div>";
+    html += "><label for='led_finish_timeout'>Enable 2-Min Finish Timeout (LEDs return to Idle)</label></div>";
 
+    // --- NEW: VIRTUAL LED PREVIEW ---
+    html += "<h3>Virtual LED Preview</h3>";
+    html += "<div class='card' style='padding: 20px; background-color: #2c2c2e; border: 1px solid #555; border-radius: 5px;'>"; // Darker card bg
+    html += "<div id='virtual-bar-container'>";
+    html += "<div id='virtual-bar' style='display: flex; width: 100%; height: 30px; background: #222; border-radius: 5px; overflow: hidden; border: 1px solid #555;'>";
+    // Add 10 virtual LEDs
+    for(int i=0; i<10; i++) {
+      html += "<div class='vled' style='width: 10%; height: 100%;'></div>";
+    }
+    html += "</div></div>"; // end virtual-bar and container
+    html += "<div id='preview-controls' style='margin-top: 15px; display: flex; flex-wrap: wrap; gap: 15px;'>";
+    html += "<label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='idle' onchange='updatePreview()' checked> Idle</label>";
+    html += "<label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='print' onchange='updatePreview()'> Printing</label>";
+    html += "<label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='pause' onchange='updatePreview()'> Paused</label>";
+    html += "<label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='error' onchange='updatePreview()'> Error</label>";
+    html += "<label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='finish' onchange='updatePreview()'> Finish</label>";
+    html += "</div></div>"; // end preview-controls and card
+    // --- END NEW ---
 
     // --- LED Colors & Brightness ---
     html += "<h3>LED States</h3><div class='grid'>";
     html += "<div class='card'><h4>Idle Status</h4>";
-    // html += "<div><label for='idle_color'>Color (RRGGBB)</label><input type='text' id='idle_color' name='idle_color' value='" + String(idle_color_hex) + "'><input type='color' class='color-input' value='#" + String(idle_color_hex) + "' onchange='document.getElementById(\"idle_color\").value = this.value.substring(1).toUpperCase()'></div>"; // OLD
-    html += "<div><label for='idle_color'>Color (RRGGBB)</label><input type='text' id='idle_color' name='idle_color' value='";
+    html += "<div><label for='idle_color'>Color (RRGGBB) <span id='idle_color_swatch' class='color-swatch'></span></label><input type='text' id='idle_color' name='idle_color' value='"; // <-- MODIFIED
     html += String(idle_color_hex);
-    html += "'><input type='color' class='color-input' value='#";
+    html += "' oninput='updatePreview(); try { document.getElementById(\"idle_color_picker\").value = \"#\" + this.value; } catch(e) {}'><input type='color' class='color-input' id='idle_color_picker' value='#";
     html += String(idle_color_hex);
-    html += "' onchange='document.getElementById(\"idle_color\").value = this.value.substring(1).toUpperCase()'></div>";
+    html += "' onchange='document.getElementById(\"idle_color\").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>";
     
-    // html += "<div><label for='idle_bright'>Brightness (0-255)</label><input type='number' id='idle_bright' name='idle_bright' min='0' max='255' value='" + String(config.led_bright_idle) + "'></div></div>"; // OLD
     html += "<div><label for='idle_bright'>Brightness (0-255)</label><input type='number' id='idle_bright' name='idle_bright' min='0' max='255' value='";
     html += String(config.led_bright_idle);
-    html += "'></div></div>";
+    html += "' oninput='updatePreview()'></div></div>"; // Added oninput
 
 
     html += "<div class='card'><h4>Printing Status</h4>";
-    // html += "<div><label for='print_color'>Color (RRGGBB)</label><input type='text' id='print_color' name='print_color' value='" + String(print_color_hex) + "'><input type='color' class='color-input' value='#" + String(print_color_hex) + "' onchange='document.getElementById(\"print_color\").value = this.value.substring(1).toUpperCase()'></div>"; // OLD
-    html += "<div><label for='print_color'>Color (RRGGBB)</label><input type='text' id='print_color' name='print_color' value='";
+    html += "<div><label for='print_color'>Color (RRGGBB) <span id='print_color_swatch' class='color-swatch'></span></label><input type='text' id='print_color' name='print_color' value='"; // <-- MODIFIED
     html += String(print_color_hex);
-    html += "'><input type='color' class='color-input' value='#";
+    html += "' oninput='updatePreview(); try { document.getElementById(\"print_color_picker\").value = \"#\" + this.value; } catch(e) {}'><input type='color' class='color-input' id='print_color_picker' value='#";
     html += String(print_color_hex);
-    html += "' onchange='document.getElementById(\"print_color\").value = this.value.substring(1).toUpperCase()'></div>";
+    html += "' onchange='document.getElementById(\"print_color\").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>";
     
-    // html += "<div><label for='print_bright'>Brightness (0-255)</label><input type='number' id='print_bright' name='print_bright' min='0' max='255' value='" + String(config.led_bright_print) + "'></div></div>"; // OLD
     html += "<div><label for='print_bright'>Brightness (0-255)</label><input type='number' id='print_bright' name='print_bright' min='0' max='255' value='";
     html += String(config.led_bright_print);
-    html += "'></div></div>";
+    html += "' oninput='updatePreview()'></div></div>"; // Added oninput
 
 
     html += "<div class='card'><h4>Paused Status</h4>";
-    // html += "<div><label for='pause_color'>Color (RRGGBB)</label><input type='text' id='pause_color' name='pause_color' value='" + String(pause_color_hex) + "'><input type='color' class='color-input' value='#" + String(pause_color_hex) + "' onchange='document.getElementById(\"pause_color\").value = this.value.substring(1).toUpperCase()'></div>"; // OLD
-    html += "<div><label for='pause_color'>Color (RRGGBB)</label><input type='text' id='pause_color' name='pause_color' value='";
+    html += "<div><label for='pause_color'>Color (RRGGBB) <span id='pause_color_swatch' class='color-swatch'></span></label><input type='text' id='pause_color' name='pause_color' value='"; // <-- MODIFIED
     html += String(pause_color_hex);
-    html += "'><input type='color' class='color-input' value='#";
+    html += "' oninput='updatePreview(); try { document.getElementById(\"pause_color_picker\").value = \"#\" + this.value; } catch(e) {}'><input type='color' class='color-input' id='pause_color_picker' value='#";
     html += String(pause_color_hex);
-    html += "' onchange='document.getElementById(\"pause_color\").value = this.value.substring(1).toUpperCase()'></div>";
+    html += "' onchange='document.getElementById(\"pause_color\").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>";
     
-    // html += "<div><label for='pause_bright'>Brightness (0-255)</label><input type='number' id='pause_bright' name='pause_bright' min='0' max='255' value='" + String(config.led_bright_pause) + "'></div></div>"; // OLD
     html += "<div><label for='pause_bright'>Brightness (0-255)</label><input type='number' id='pause_bright' name='pause_bright' min='0' max='255' value='";
     html += String(config.led_bright_pause);
-    html += "'></div></div>";
+    html += "' oninput='updatePreview()'></div></div>"; // Added oninput
 
 
     html += "<div class='card'><h4>Error Status</h4>";
-    // html += "<div><label for='error_color'>Color (RRGGBB)</label><input type='text' id='error_color' name='error_color' value='" + String(error_color_hex) + "'><input type='color' class='color-input' value='#" + String(error_color_hex) + "' onchange='document.getElementById(\"error_color\").value = this.value.substring(1).toUpperCase()'></div>"; // OLD
-    html += "<div><label for='error_color'>Color (RRGGBB)</label><input type='text' id='error_color' name='error_color' value='";
+    html += "<div><label for='error_color'>Color (RRGGBB) <span id='error_color_swatch' class='color-swatch'></span></label><input type='text' id='error_color' name='error_color' value='"; // <-- MODIFIED
     html += String(error_color_hex);
-    html += "'><input type='color' class='color-input' value='#";
+    html += "' oninput='updatePreview(); try { document.getElementById(\"error_color_picker\").value = \"#\" + this.value; } catch(e) {}'><input type='color' class='color-input' id='error_color_picker' value='#";
     html += String(error_color_hex);
-    html += "' onchange='document.getElementById(\"error_color\").value = this.value.substring(1).toUpperCase()'></div>";
+    html += "' onchange='document.getElementById(\"error_color\").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>";
     
-    // html += "<div><label for='error_bright'>Brightness (0-255)</label><input type='number' id='error_bright' name='error_bright' min='0' max='255' value='" + String(config.led_bright_error) + "'></div></div>"; // OLD
     html += "<div><label for='error_bright'>Brightness (0-255)</label><input type='number' id='error_bright' name='error_bright' min='0' max='255' value='";
     html += String(config.led_bright_error);
-    html += "'></div></div>";
+    html += "' oninput='updatePreview()'></div></div>"; // Added oninput
 
 
     html += "<div class='card'><h4>Finish Status</h4>";
-    // html += "<div><label for='finish_color'>Color (RRGGBB)</label><input type='text' id='finish_color' name='finish_color' value='" + String(finish_color_hex) + "'><input type='color' class='color-input' value='#" + String(finish_color_hex) + "' onchange='document.getElementById(\"finish_color\").value = this.value.substring(1).toUpperCase()'></div>"; // OLD
-    html += "<div><label for='finish_color'>Color (RRGGBB)</label><input type='text' id='finish_color' name='finish_color' value='";
+    html += "<div><label for='finish_color'>Color (RRGGBB) <span id='finish_color_swatch' class='color-swatch'></span></label><input type='text' id='finish_color' name='finish_color' value='"; // <-- MODIFIED
     html += String(finish_color_hex);
-    html += "'><input type='color' class='color-input' value='#";
+    html += "' oninput='updatePreview(); try { document.getElementById(\"finish_color_picker\").value = \"#\" + this.value; } catch(e) {}'><input type='color' class='color-input' id='finish_color_picker' value='#";
     html += String(finish_color_hex);
-    html += "' onchange='document.getElementById(\"finish_color\").value = this.value.substring(1).toUpperCase()'></div>";
+    html += "' onchange='document.getElementById(\"finish_color\").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>";
     
-    // html += "<div><label for='finish_bright'>Brightness (0-255)</label><input type='number' id='finish_bright' name='finish_bright' min='0' max='255' value='" + String(config.led_bright_finish) + "'></div></div>"; // OLD
     html += "<div><label for='finish_bright'>Brightness (0-255)</label><input type='number' id='finish_bright' name='finish_bright' min='0' max='255' value='";
     html += String(config.led_bright_finish);
-    html += "'></div></div>";
+    html += "' oninput='updatePreview()'></div></div>"; // Added oninput
 
     html += "</div>"; // End .grid
 
@@ -1121,6 +1315,40 @@ void handleConfig() {
     // --- END NEW ---
 
     html += "<br><p><a href='/'>&laquo; Back to Status Page</a></p>";
+
+    // --- NEW: JAVASCRIPT FOR PREVIEW ---
+    html += "<script>";
+    html += "function updatePreview() {";
+    html += "  try {";
+    // Update selected state preview bar
+    html += "    let state = document.querySelector('input[name=\"preview_state\"]:checked').value;";
+    html += "    let color = document.getElementById(state + '_color').value;";
+    html += "    if (!color.match(/^[0-9a-fA-F]{6}$/)) { color = '000000'; }"; // Basic hex validation
+    html += "    let bright = parseInt(document.getElementById(state + '_bright').value, 10);";
+    html += "    if (isNaN(bright) || bright < 0 || bright > 255) { bright = 0; }"; // Basic number validation
+    html += "    let opacity = (bright / 255).toFixed(2);";
+    html += "    let vleds = document.querySelectorAll('.vled');";
+    html += "    vleds.forEach(led => {";
+    html += "      led.style.backgroundColor = '#' + color;";
+    html += "      led.style.opacity = opacity;";
+    html += "    });";
+    
+    // --- NEW: Update all color swatches ---
+    html += "    let states = ['idle', 'print', 'pause', 'error', 'finish'];";
+    html += "    states.forEach(s => {";
+    html += "      let c = document.getElementById(s + '_color').value;";
+    html += "      if (!c.match(/^[0-9a-fA-F]{6}$/)) { c = '000000'; }";
+    html += "      document.getElementById(s + '_color_swatch').style.backgroundColor = '#' + c;";
+    html += "    });";
+    // --- END NEW ---
+
+    html += "  } catch (e) { console.error('Preview update failed:', e); }";
+    html += "}";
+    // Run on load to set initial state
+    html += "document.addEventListener('DOMContentLoaded', updatePreview);";
+    html += "</script>";
+    // --- END NEW ---
+
     html += "</body></html>";
 
     server.send(200, "text/html", html);
@@ -1201,6 +1429,7 @@ void update_leds() {
 // -----------------------------------------------------
 // --- Configuration & Light Control Functions ---
 
+// --- UPDATED: set_chamber_light_state ---
 void set_chamber_light_state(bool lightShouldBeOn) {
   int pwm_value = 0; // Default to OFF
   if (lightShouldBeOn) {
@@ -1209,21 +1438,23 @@ void set_chamber_light_state(bool lightShouldBeOn) {
   int output_pwm = (config.invert_output) ? (255 - pwm_value) : pwm_value;
   // Ensure the value is within bounds (0-255)
   output_pwm = constrain(output_pwm, 0, 255);
-  ledcWrite(config.chamber_light_pin, output_pwm);
+  ledcWrite(config.chamber_light_pin, output_pwm); // <-- FIX: Use pin number
+  external_light_is_on = lightShouldBeOn; // <-- NEW: Track state
 }
+// --- END UPDATED ---
 
-
+// --- UPDATED: setup_chamber_light_pwm ---
 void setup_chamber_light_pwm(int pin) {
-    // Attach the pin to the LEDC controller
-    // ledcAttachPin(pin, PWM_CHANNEL); // Old V2 API
-    // Use V3 API: ledcAttach(pin, freq, resolution)
+    // Use the v3 API (which you confirmed is required)
     ledcAttach(pin, PWM_FREQ, PWM_RESOLUTION);
 
     // Set initial state (OFF)
     int off_value = config.invert_output ? 255 : 0;
     ledcWrite(pin, off_value); // Write directly to the pin
+    external_light_is_on = false; // <-- NEW: Init state
     Serial.printf("PWM enabled on GPIO %d. OFF value: %d\n", pin, off_value);
 }
+// --- END UPDATED ---
 
 
 bool saveConfig() {
@@ -1249,6 +1480,9 @@ bool saveConfig() {
   doc["led_bright_error"] = config.led_bright_error;
   doc["led_bright_finish"] = config.led_bright_finish;
   doc["led_finish_timeout"] = config.led_finish_timeout;
+  
+  doc["ntp_server"] = config.ntp_server; // <-- NEW
+  doc["timezone"] = config.timezone; // <-- NEW
 
   File configFile = LittleFS.open("/config.json", "w");
   if (!configFile) {
@@ -1326,6 +1560,11 @@ bool loadConfig() {
   tempConfig.led_bright_finish = doc["led_bright_finish"] | config.led_bright_finish;
   tempConfig.led_finish_timeout = doc["led_finish_timeout"] | config.led_finish_timeout;
 
+  // --- NEW: Load Time Settings ---
+  strlcpy(tempConfig.ntp_server, doc["ntp_server"] | "pool.ntp.org", sizeof(tempConfig.ntp_server));
+  strlcpy(tempConfig.timezone, doc["timezone"] | "GMT0BST,M3.5.0/1,M10.5.0", sizeof(tempConfig.timezone));
+  // --- END NEW ---
+
   // Validate loaded values before applying
   if (!isValidGpioPin(tempConfig.chamber_light_pin)) {
       Serial.printf("WARNING: Loaded invalid chamber light pin (%d). Using default (%d).\n", tempConfig.chamber_light_pin, DEFAULT_CHAMBER_LIGHT_PIN);
@@ -1392,6 +1631,11 @@ void saveConfigCallback() {
   tempConfig.led_bright_error = constrain(atoi(custom_error_bright.getValue()), 0, 255);
   tempConfig.led_bright_finish = constrain(atoi(custom_finish_bright.getValue()), 0, 255);
   tempConfig.led_finish_timeout = (strcmp(custom_led_finish_timeout.getValue(), "1") == 0);
+
+  // --- NEW: Save Time Settings ---
+  strlcpy(tempConfig.ntp_server, custom_ntp_server.getValue(), sizeof(tempConfig.ntp_server));
+  strlcpy(tempConfig.timezone, custom_timezone.getValue(), sizeof(tempConfig.timezone));
+  // --- END NEW ---
 
   // Apply the changes to the global config struct
   config = tempConfig;
@@ -1472,8 +1716,12 @@ void callback(char* topic, byte* payload, unsigned int length) {
   memcpy(messageBuffer, payload, length);
   messageBuffer[length] = '\0';
 
-  // --- NEW: Store the raw JSON ---
-  last_mqtt_json = messageBuffer;
+  // --- NEW: Store in history with timestamp ---
+  String log_entry = getTimestamp() + " " + messageBuffer;
+  mqtt_history.push_back(log_entry);
+  if(mqtt_history.size() > MAX_HISTORY_SIZE) {
+    mqtt_history.pop_front(); // Remove the oldest message
+  }
   // --- END NEW ---
 
   // Increase JSON doc size slightly for safety margin
@@ -1547,9 +1795,11 @@ void parseFullReport(JsonObject doc) {
   float newNozzleTemp = current_nozzle_temp;
   float newBedTargetTemp = current_bed_target_temp;
   float newNozzleTargetTemp = current_nozzle_target_temp;
-  int newTimeRemaining = current_time_remaining; // <-- NEW
+  int newTimeRemaining = current_time_remaining;
+  int newLayerNum = current_layer;
   const char* newWifiSignal = current_wifi_signal.c_str();
   bool lightModeFound = false;
+  int newPrintSubStage = -1; // <-- NEW
 
   // --- Get Light Mode (NEW LOGIC) ---
   // 1. Check for "lights_report" array inside "print" (for Type 3 messages)
@@ -1583,12 +1833,21 @@ void parseFullReport(JsonObject doc) {
 
   // Get print data (we already know 'print' is not null)
   newGcodeState = print_data["gcode_state"] | current_gcode_state.c_str();
-  newPrintPercentage = print_data["print_percentage"] | current_print_percentage;
+  
+  // --- NEW: Check for both percentage keys ---
+  if (print_data.containsKey("print_percentage")) {
+    newPrintPercentage = print_data["print_percentage"] | current_print_percentage;
+  } else if (print_data.containsKey("mc_percent")) {
+    newPrintPercentage = print_data["mc_percent"] | current_print_percentage;
+  }
+  
   newBedTemp = print_data["bed_temper"] | current_bed_temp;
   newNozzleTemp = print_data["nozzle_temper"] | current_nozzle_temp;
   newBedTargetTemp = print_data["bed_target_temper"] | current_bed_target_temp;
   newNozzleTargetTemp = print_data["nozzle_target_temper"] | current_nozzle_target_temp;
-  newTimeRemaining = print_data["mc_remaining_time"] | current_time_remaining; // <-- NEW
+  newTimeRemaining = print_data["mc_remaining_time"] | current_time_remaining;
+  newLayerNum = print_data["layer_num"] | current_layer;
+  newPrintSubStage = print_data["mc_print_sub_stage"] | -1; // <-- NEW
 
   // Get WiFi signal (can be in system or print)
   if (!system_data.isNull() && system_data.containsKey("wifi_signal")) {
@@ -1597,8 +1856,16 @@ void parseFullReport(JsonObject doc) {
       newWifiSignal = print_data["wifi_signal"] | current_wifi_signal.c_str();
   }
 
+  // --- NEW: Check for print sub-stage (which also turns on the light) ---
+  if (newPrintSubStage == 1 && !lightModeFound) {
+      newChamberLightMode = "on";
+      lightModeFound = true; // Mark it as found
+      Serial.println("Inferred light 'on' from mc_print_sub_stage: 1");
+  }
+  // --- End New ---
+
   // --- Call the state updater ---
-  updatePrinterState(String(newGcodeState), newPrintPercentage, String(newChamberLightMode), newBedTemp, newNozzleTemp, String(newWifiSignal), newBedTargetTemp, newNozzleTargetTemp, newTimeRemaining);
+  updatePrinterState(String(newGcodeState), newPrintPercentage, String(newChamberLightMode), newBedTemp, newNozzleTemp, String(newWifiSignal), newBedTargetTemp, newNozzleTargetTemp, newTimeRemaining, newLayerNum);
 }
 // --- END UPDATED function ---
 
@@ -1614,7 +1881,8 @@ void parseDeltaUpdate(JsonArray arr) {
   float newNozzleTemp = current_nozzle_temp;
   float newBedTargetTemp = current_bed_target_temp;
   float newNozzleTargetTemp = current_nozzle_target_temp;
-  int newTimeRemaining = current_time_remaining; // <-- NEW
+  int newTimeRemaining = current_time_remaining;
+  int newLayerNum = current_layer;
   String newWifiSignal = current_wifi_signal;
 
   // Iterate the array (can contain multiple updates)
@@ -1666,6 +1934,18 @@ void parseDeltaUpdate(JsonArray arr) {
           Serial.print("Received print_percentage delta update. New value: ");
           Serial.println(newPrintPercentage);
       }
+      // --- Found mc_percent! ---
+      else if (strcmp(nodeName, "mc_percent") == 0) {
+          newPrintPercentage = node["value"] | current_print_percentage;
+          Serial.print("Received mc_percent delta update. New value: ");
+          Serial.println(newPrintPercentage);
+      }
+      // --- Found layer_num! ---
+      else if (strcmp(nodeName, "layer_num") == 0) {
+          newLayerNum = node["value"] | current_layer;
+          Serial.print("Received layer_num delta update. New value: ");
+          Serial.println(newLayerNum);
+      }
       // --- Found time_remaining! ---
       else if (strcmp(nodeName, "mc_remaining_time") == 0) {
           newTimeRemaining = node["value"] | current_time_remaining;
@@ -1678,17 +1958,25 @@ void parseDeltaUpdate(JsonArray arr) {
           Serial.print("Received wifi_signal delta update. New value: ");
           Serial.println(newWifiSignal);
       }
+      // --- Found print_sub_stage! ---
+      else if (strcmp(nodeName, "mc_print_sub_stage") == 0) {
+          int subStage = node["value"] | -1;
+          if (subStage == 1) {
+              newChamberLightMode = "on"; // Force light mode to 'on'
+              Serial.println("Inferred light 'on' from mc_print_sub_stage delta update");
+          }
+      }
   }
 
   // --- Call the state updater ---
   // This function is now called *after* the loop, so it batches all delta changes
-  updatePrinterState(newGcodeState, newPrintPercentage, newChamberLightMode, newBedTemp, newNozzleTemp, newWifiSignal, newBedTargetTemp, newNozzleTargetTemp, newTimeRemaining);
+  updatePrinterState(newGcodeState, newPrintPercentage, newChamberLightMode, newBedTemp, newNozzleTemp, newWifiSignal, newBedTargetTemp, newNozzleTargetTemp, newTimeRemaining, newLayerNum);
 }
 // --- END UPDATED function ---
 
 
 // --- UPDATED: Centralized function to update state and lights ---
-void updatePrinterState(String gcodeState, int printPercentage, String chamberLightMode, float bedTemp, float nozzleTemp, String wifiSignal, float bedTargetTemp, float nozzleTargetTemp, int timeRemaining) { // <-- UPDATED
+void updatePrinterState(String gcodeState, int printPercentage, String chamberLightMode, float bedTemp, float nozzleTemp, String wifiSignal, float bedTargetTemp, float nozzleTargetTemp, int timeRemaining, int layerNum) { // <-- UPDATED
 
   // --- 1. Manage Finish Timer ---
   // Check for state *change* to FINISH
@@ -1696,11 +1984,7 @@ void updatePrinterState(String gcodeState, int printPercentage, String chamberLi
     finishTime = millis();
     Serial.println("Print finished, starting 2-minute timers.");
   } 
-  // Check for state *change* away from FINISH
-  else if (gcodeState != "FINISH" && current_gcode_state == "FINISH") {
-    finishTime = 0;
-    Serial.println("State changed from FINISH, resetting timers.");
-  }
+  // DO NOT reset finishTime here, the loop() timer will handle it
 
   // --- 2. Update global states ---
   current_gcode_state = gcodeState;
@@ -1710,7 +1994,8 @@ void updatePrinterState(String gcodeState, int printPercentage, String chamberLi
   current_nozzle_temp = nozzleTemp;
   current_bed_target_temp = bedTargetTemp;
   current_nozzle_target_temp = nozzleTargetTemp;
-  current_time_remaining = timeRemaining; // <-- NEW
+  current_time_remaining = timeRemaining;
+  current_layer = layerNum;
   current_wifi_signal = wifiSignal;
   current_error_state = (gcodeState == "FAILED" || gcodeState == "STOP");
 
@@ -1719,22 +2004,22 @@ void updatePrinterState(String gcodeState, int printPercentage, String chamberLi
     bool lightShouldBeOnBasedOnPrinter = (chamberLightMode == "on" || chamberLightMode == "flashing");
     bool finalLightState = lightShouldBeOnBasedOnPrinter; // Default to following printer
 
-    // Override if in FINISH state and timeout is enabled
-    if (current_gcode_state == "FINISH" && config.chamber_light_finish_timeout) {
-        // We are in a finish state with the timeout enabled
-        if (finishTime > 0 && (millis() - finishTime < FINISH_LIGHT_TIMEOUT)) {
-            // Timer is active, force light ON, regardless of printer's light state
+    // --- UPDATED TIMER CHECK ---
+    // Check for timer override
+    if (config.chamber_light_finish_timeout && finishTime > 0) {
+        if (millis() - finishTime < FINISH_LIGHT_TIMEOUT) {
+            // Timer is active, force light ON
             finalLightState = true;
         } else {
-            // Timer has expired, force light OFF, regardless of printer's light state
+            // Timer has expired, force light OFF
             finalLightState = false;
+            // The loop() will also catch this, but this is faster
         }
     }
+    // --- END UPDATED ---
     
     // Only update if the calculated state is different from the current state
-    int current_pwm_duty = ledcRead(config.chamber_light_pin);
-    bool current_is_on = (config.invert_output) ? (current_pwm_duty < 255) : (current_pwm_duty > 0);
-    if (finalLightState != current_is_on) {
+    if (finalLightState != external_light_is_on) { 
        set_chamber_light_state(finalLightState);
     }
   }
@@ -1744,3 +2029,53 @@ void updatePrinterState(String gcodeState, int printPercentage, String chamberLi
 }
 // --- END UPDATED function ---
 
+
+// --- NEW: Helper function to build the timezone dropdown ---
+String getTimezoneDropdown(String selectedTz) {
+  String html = "<select id='timezone' name='timezone'>";
+  
+  // Helper to add <option>
+  auto addOption = [&](const char* tz, const char* name) {
+    html += "<option value='";
+    html += tz;
+    html += "'";
+    if (selectedTz == tz) {
+      html += " selected";
+    }
+    html += ">";
+    html += name;
+    html += "</option>";
+  };
+
+  // Add a selection of common timezones
+  // (TZ format: https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv)
+  addOption("GMT0BST,M3.5.0/1,M10.5.0", "(GMT/BST) London, Dublin");
+  addOption("CET-1CEST,M3.5.0,M10.5.0/3", "(CET/CEST) Berlin, Paris, Rome");
+  addOption("EET-2EEST,M3.5.0/3,M10.5.0/4", "(EET/EEST) Athens, Helsinki, Kyiv");
+  html += "<option disabled>--- Americas ---</option>";
+  addOption("EST5EDT,M3.2.0,M11.1.0", "(EST/EDT) New York, Toronto");
+  addOption("CST6CDT,M3.2.0,M11.1.0", "(CST/CDT) Chicago, Mexico City");
+  addOption("MST7MDT,M3.2.0,M11.1.0", "(MST/MDT) Denver");
+  addOption("PST8PDT,M3.2.0,M11.1.0", "(PST/PDT) Los Angeles, Vancouver");
+  addOption("AST4ADT,M3.2.0,M11.1.0", "(AST/ADT) Halifax (Atlantic)");
+  addOption("AKST9AKDT,M3.2.0,M11.1.0", "(AKST/AKDT) Alaska");
+  addOption("HST10", "(HST) Hawaii (No DST)");
+  html += "<option disabled>--- Asia/Pacific ---</option>";
+  addOption("JST-9", "(JST) Tokyo, Seoul (No DST)");
+  addOption("CST-8", "(CST) Beijing, Perth, Singapore (No DST)");
+  addOption("AEST-10AEDT,M10.1.0,M4.1.0/3", "(AEST/AEDT) Sydney, Melbourne");
+  addOption("ACST-9:30ACDT,M10.1.0,M4.1.0/3", "(ACST/ACDT) Adelaide");
+  addOption("AWST-8", "(AWST) Perth (No DST)");
+  addOption("NZST-12NZDT,M9.5.0,M4.1.0/3", "(NZST/NZDT) New Zealand");
+  addOption("IST-5:30", "(IST) India (No DST)");
+  html += "<option disabled>--- Other ---</option>";
+  addOption("UTC0", "(UTC) Coordinated Universal Time");
+  
+  // Add the currently saved one if it's not in the list (custom)
+  if (html.indexOf("selected") == -1) {
+     addOption(selectedTz.c_str(), "(Custom)");
+  }
+
+  html += "</select>";
+  return html;
+}
