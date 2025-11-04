@@ -97,6 +97,7 @@ On its first boot (or after a factory reset), the ESP32 will not find any saved 
 Once connected, you can access the controller by visiting its IP address in a web browser.
 
 ### Status Page (`/`)
+![alt text](https://github.com/eddwatts/BambuLED/blob/bf4384a51684fe2ba9794a04d4fef1aa608faa1a/Screenshot-Status.png "Status Page")
 
  This is the main dashboard, which auto-refreshes every 3 seconds. It shows:
 *  **Connection Status:** WiFi network, device IP, and MQTT connection status.
@@ -106,6 +107,7 @@ Once connected, you can access the controller by visiting its IP address in a we
 *  **Manual Control:** Buttons to turn the external light **On**, **Off**, or set it back to **Auto** mode.
 
 ### Configuration Page (`/config`)
+![alt text](https://github.com/eddwatts/BambuLED/blob/bf4384a51684fe2ba9794a04d4fef1aa608faa1a/Screenshot%20config.png "Config Page")
 
  This page allows you to change *all* device settings (except for WiFi) *after* the initial setup.
 *  **Printer Settings:** Change the IP, Serial, or Access Code.
