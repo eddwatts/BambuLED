@@ -3,7 +3,7 @@
 This project transforms an ESP32 into a smart controller for your Bambu Lab 3D printer. It connects directly to the printer's local MQTT broker to monitor its status in real-time.
 
 It provides two primary functions:
-1.  **External Chamber Light:** Controls a dimmable external light (like a 12V/24V LED strip) using a MOSFET, automatically syncing with the printer's light or manual overrides.
+1.  **External Chamber Light:** Controls a dimmable external light (like a 5V/12V/24V LED strip) using a MOSFET, automatically syncing with the printer's light or manual overrides.
 2.  **WS2812B Status Bar:** Drives a (FastLED) addressable LED strip to provide a clear visual indication of the printer's status (e.g., Idle, Printing, Paused, Error).
 
 The device hosts a full web interface for live status monitoring, manual control, and deep configuration.
