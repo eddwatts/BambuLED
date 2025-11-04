@@ -27,7 +27,7 @@ const int DEFAULT_CHAMBER_LIGHT_PIN = 14; // <-- YOUR FIX
 const int LED_PIN_CONST = LED_DATA_PIN; // Used for status display in non-template code
 // -----------------------------------------------------------------
 
-const int DEFAULT_NUM_LEDS = 10;
+const int DEFAULT_NUM_LEDS = 18;
 #define MAX_LEDS 60 // Maximum number of LEDs supported by the global array
 
 // --- JSON Configuration Structure and Defaults ---
