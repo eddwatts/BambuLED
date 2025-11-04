@@ -42,7 +42,7 @@ The device hosts a full web interface for live status monitoring, manual control
     *  **Why 16MB Flash (N16)?** The large flash provides ample space for the application, the LittleFS file system , and Over-the-Air (OTA) updates, which requires partitions large enough to hold two full copies of the firmware.
     *  **Why 8MB PSRAM (R8)?** The code uses `WiFiClientSecure` (SSL) and parses large (4KB+) JSON payloads from MQTT.  The firmware is **optimized to use this external PSRAM** to store the MQTT message history, which prevents "Out of Memory" crashes and ensures stability. A standard ESP32 without PSRAM may be unstable.
 * **External Light Hardware:**
-    * A high-power 12V or 24V LED strip for chamber lighting.
+    * A 5V or high-power 12V or 24V LED strip for chamber lighting.
     * A logic-level N-Channel MOSFET module (like an IRF520 or AOD4184) or a Relay Module (do not use dimer settings if using a relay) to safely control the high-voltage light from the ESP32's 3.3V pin.
 * **Status Bar (Optional):** A WS2812B (e.g., NeoPixel) addressable LED strip.
 * **Reset Button (Optional):** A momentary push button or jumper wire for the factory reset pin.
