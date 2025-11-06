@@ -1,21 +1,29 @@
-#ifndef LIGHT_CONTROLLER_H
-#define LIGHT_CONTROLLER_H
+#ifndef LED_CONTROLLER_H
+#define LED_CONTROLLER_H
 
+#include <FastLED.h>
 #include <Arduino.h>
-#include <driver/ledc.h>
-#include "config.h" // <-- ADDED
+#include "config.h"  // Add this include
 
 // External declarations from main file
+// extern Config config;
+extern String current_gcode_state;
+extern int current_print_percentage;
+extern bool current_error_state;
+extern unsigned long finishTime;
+extern const unsigned long FINISH_LIGHT_TIMEOUT;
+extern unsigned long lastAnimationUpdate;
+
+// Add external declarations needed for handleFinishTimers
 extern bool external_light_is_on;
 extern bool manual_light_control;
 
-// Add extern for WiFiManager parameter
-extern WiFiManagerParameter custom_bbl_pin;
+// LED array declaration
+extern CRGB leds[MAX_LEDS];
 
 // Function declarations
-void initChamberLight();
-void reinitHardwareIfNeeded();
-void setChamberLightState(bool lightShouldBeOn);
-void setupChamberLightPWM(int pin);
+void initLEDStrip();
+void updateLEDs();
+void handleFinishTimers();
 
 #endif
