@@ -5,11 +5,6 @@
 #include <Arduino.h>
 #include "config.h"  // Add this include
 
-// LED Constants
-// #define LED_DATA_PIN 4
-// const int LED_PIN_CONST = LED_DATA_PIN;
-// #define MAX_LEDS 60
-
 // External declarations from main file
 // extern Config config;
 extern String current_gcode_state;
