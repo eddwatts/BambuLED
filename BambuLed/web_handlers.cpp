@@ -9,16 +9,16 @@
 // External declaration for the WebSocket server instance from the .ino file
 extern WebSocketsServer webSocket;
 
-// --- PROGMEM HTML for Root Page (Suggestion 4A + 5) ---
+// --- PROGMEM HTML for Root Page  ---
 const char PAGE_ROOT[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Bambu Light Status</title>
-  <!-- Suggestion 5: Favicon -->
+  
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath fill='%23378cf0' d='M50 0C27.9 0 10 17.9 10 40c0 14.9 8.2 27.8 20 34.8V85c0 2.8 2.2 5 5 5h30c2.8 0 5-2.2 5-5v-10.2c11.8-7 20-19.9 20-34.8C90 17.9 72.1 0 50 0zM50 75h-0.1V67.8c-1.6 0.1-3.2 0.2-4.9 0.2s-3.3-0.1-4.9-0.2V75H25V62.4c-9.1-5.9-15-16.1-15-27.4C10 17.8 27.8 0 50 0s40 17.8 40 40c0 11.3-5.9 21.5-15 27.4V75h-15V67.8c-1.6 0.1-3.2 0.2-4.9 0.2s-3.3-0.1-4.9-0.2V75z'/%3E%3C/svg%3E">
-  <!-- Suggestion 5: New CSS -->
+  
   <style>
     :root {
       --bg-color: #1a1a1b;
@@ -112,7 +112,7 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
   </style>
 </head>
 <body>
-  <!-- Suggestion 5: Logo -->
+  
   <div class="logo_title_wrapper">
     <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="#378cf0" width="50" height="50">
       <path d="M50 0C27.9 0 10 17.9 10 40c0 14.9 8.2 27.8 20 34.8V85c0 2.8 2.2 5 5 5h30c2.8 0 5-2.2 5-5v-10.2c11.8-7 20-19.9 20-34.8C90 17.9 72.1 0 50 0zM50 75h-0.1V67.8c-1.6 0.1-3.2 0.2-4.9 0.2s-3.3-0.1-4.9-0.2V75H25V62.4c-9.1-5.9-15-16.1-15-27.4C10 17.8 27.8 0 50 0s40 17.8 40 40c0 11.3-5.9 21.5-15 27.4V75h-15V67.8c-1.6 0.1-3.2 0.2-4.9 0.2s-3.3-0.1-4.9-0.2V75z"/>
@@ -120,7 +120,7 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
     <h1>Bambu Light Controller</h1>
   </div>
   
-  <!-- Suggestion 5: New Grid Layout -->
+  
   <div class="status_grid">
     <div id="wifi-status-div" class="status {{WIFI_STATUS_CLASS}}">
       <strong>WiFi Status</strong>
@@ -169,7 +169,6 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
 
   <h2>Manual Control</h2>
   <div class="button-group">
-    <!-- Suggestion 3: Updated buttons for WebSockets -->
     <button id="btn-on" class="button">Turn Light ON</button>
     <button id="btn-off" class="button off">Turn Light OFF</button>
     <button id="btn-auto" class="button auto">Set to AUTO</button>
@@ -181,7 +180,6 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
     <a href="/config" class="button">Change Device Settings</a>
   </div>
   
-  <!-- Suggestion 3: New WebSocket JavaScript -->
   <script>
     var ws;
     
@@ -285,7 +283,7 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
-// --- PROGMEM HTML for Config Page (Suggestion 4A + 5) ---
+// --- PROGMEM HTML for Config Page ---
 const char PAGE_CONFIG[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html><head>
     <meta name='viewport' content='width=device-width, initial-scale=1'>
@@ -372,7 +370,6 @@ const char PAGE_CONFIG[] PROGMEM = R"rawliteral(
     <div class='card'><p>Download a backup of your current settings.</p><a href='/backup' class='button' style='background-color:#17a2b8;'>Backup Configuration</a></div>
     <div class='card'><p>Upload a 'config.json' file to restore settings. <b>This will reboot the device.</b></p><a href='/restore' class='button danger'>Restore Configuration</a></div>
     </div>
-    <!-- Suggestion 5: Device Management Card -->
     <h2>Device Management</h2>
     <div class='grid'>
       <div class='card'>
@@ -416,7 +413,7 @@ const char PAGE_CONFIG[] PROGMEM = R"rawliteral(
     </body></html>
 )rawliteral";
 
-// --- PROGMEM HTML for MQTT Page (Suggestion 4A) ---
+// --- PROGMEM HTML for MQTT Page ---
 const char PAGE_MQTT[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html><head><title>MQTT History</title>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
@@ -433,7 +430,7 @@ const char PAGE_MQTT[] PROGMEM = R"rawliteral(
   </body></html>
 )rawliteral";
 
-// --- PROGMEM HTML for Restore Page (Suggestion 4A) ---
+// --- PROGMEM HTML for Restore Page ---
 const char PAGE_RESTORE[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html><head><title>Restore Config</title>
   <style>body{font-family:Arial,sans-serif;margin:20px;background:#1a1a1b;color:#e0e0e0;}
@@ -551,7 +548,7 @@ void handleRoot() {
   server.send(200, "text/html", html);
 }
 
-// --- Suggestion 3: Split JSON creation from the HTTP handler ---
+
 void createStatusJson(DynamicJsonDocument& doc) {
   doc["mqtt_connected"] = client.connected();
 
@@ -647,7 +644,7 @@ void createStatusJson(DynamicJsonDocument& doc) {
   doc["led_status_class"] = led_status_class;
 }
 
-// --- Suggestion 3: New HTTP handler ---
+
 void handleStatusJson() {
   DynamicJsonDocument doc(1024);
   createStatusJson(doc); // Call the new function
@@ -657,7 +654,7 @@ void handleStatusJson() {
   server.send(200, "application/json", json_output);
 }
 
-// --- Suggestion 3: New WebSocket broadcast function ---
+
 void broadcastWebSocketStatus() {
   DynamicJsonDocument doc(1024);
   createStatusJson(doc); // Create the JSON
@@ -692,7 +689,7 @@ void handleMqttJson() {
   server.send(200, "text/html", html);
 }
 
-// --- Suggestion 3: Update button handlers to broadcast changes ---
+
 void handleLightOn() {
   Serial.println("Web Request: /light/on");
   manual_light_control = true;
