@@ -5,15 +5,15 @@
 #include <WiFiManager.h>
 #include <FS.h>
 #include <LittleFS.h>
-#include <deque>  // Add this include
-#include <PubSubClient.h>  // Add this include
-#include <FastLED.h> // <-- FIX 1: Added this to define CRGB
-#include "config.h"  // Add this include
+#include <deque>
+#include <PubSubClient.h>
+#include <FastLED.h>
+#include <ArduinoJson.h> // <-- Include for DynamicJsonDocument
+#include "config.h"
 
 // External declarations from main file
 extern WebServer server;
 extern WiFiManager wm;
-//extern Config config;
 extern PubSubClient client;
 extern bool manual_light_control;
 extern bool external_light_is_on;
@@ -35,12 +35,9 @@ extern bool restoreSuccess;
 
 // External declarations from other modules
 extern std::deque<String> mqtt_history;
-// extern const int MAX_HISTORY_SIZE;
-extern CRGB leds[];
-// <-- FIX 2: Removed "extern const int MAX_LEDS;"
-// This line was conflicting with the #define in config.h
+extern CRGB leds[MAX_LEDS];
 
-// WiFiManager parameter declarations (from config.h)
+// WiFiManager parameter declarations
 extern WiFiManagerParameter custom_bbl_ip;
 extern WiFiManagerParameter custom_bbl_serial;
 extern WiFiManagerParameter custom_bbl_access_code;
@@ -78,5 +75,10 @@ void handleBackup();
 void handleRestorePage();
 void handleRestoreUpload();
 void handleRestoreReboot();
+
+// --- FIX: Added missing declarations for WebSocket functions ---
+void createStatusJson(DynamicJsonDocument& doc);
+void broadcastWebSocketStatus();
+// --- End Fix ---
 
 #endif
