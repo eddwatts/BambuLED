@@ -27,7 +27,7 @@ const int DEFAULT_CHAMBER_LIGHT_PIN = 14; // <-- YOUR FIX
 const int LED_PIN_CONST = LED_DATA_PIN; // Used for status display in non-template code
 // -----------------------------------------------------------------
 
-const int DEFAULT_NUM_LEDS = 18;
+const int DEFAULT_NUM_LEDS = 10;
 #define MAX_LEDS 60 // Maximum number of LEDs supported by the global array
 
 // --- JSON Configuration Structure and Defaults ---
@@ -142,7 +142,7 @@ float current_nozzle_temp = 0.0;
 float current_bed_target_temp = 0.0;
 float current_nozzle_target_temp = 0.0;
 int current_time_remaining = 0;
-int current_layer = 0; // <-- NEW
+int current_layer = 0;
 String current_wifi_signal = "N/A";
 std::deque<String> mqtt_history; // <-- NEW: Replaces last_mqtt_json
 const int MAX_HISTORY_SIZE = 100; // <-- NEW: Max history to keep
@@ -311,6 +311,10 @@ void setup() {
           FastLED.addLeds<WS2812B, LED_DATA_PIN, BRG>(leds, config.num_leds).setCorrection(TypicalLEDStrip);
       } else if (strcmp(config.led_color_order, "GBR") == 0) {
           FastLED.addLeds<WS2812B, LED_DATA_PIN, GBR>(leds, config.num_leds).setCorrection(TypicalLEDStrip);
+      } else if (strcmp(config.led_color_order, "RBG") == 0) {
+          FastLED.addLeds<WS2812B, LED_DATA_PIN, RBG>(leds, config.num_leds).setCorrection(TypicalLEDStrip);
+      } else if (strcmp(config.led_color_order, "BGR") == 0) {
+          FastLED.addLeds<WS2812B, LED_DATA_PIN, BGR>(leds, config.num_leds).setCorrection(TypicalLEDStrip);
       } else { // Default to GRB
           if (strcmp(config.led_color_order, "GRB") != 0) {
               Serial.println("Unknown order, defaulting to GRB.");
@@ -812,9 +816,9 @@ void handleStatusJson() {
   doc["wifi_signal"] = current_wifi_signal;
 
   // Light Status
-  // int pwm_duty = ledcRead(config.chamber_light_pin); // <-- OLD
-  // bool is_on = (config.invert_output) ? (pwm_duty < 255) : (pwm_duty > 0); // <-- OLD
-  doc["light_is_on"] = external_light_is_on; // <-- NEW
+  // int pwm_duty = ledcRead(config.chamber_light_pin); // <-- BUG: This won't work
+  // bool is_on = (config.invert_output) ? (pwm_duty < 255) : (pwm_duty > 0); // <-- BUG
+  doc["light_is_on"] = external_light_is_on; // <-- FIX: Use software state
   doc["chamber_bright"] = config.chamber_pwm_brightness;
   doc["manual_control"] = manual_light_control;
   doc["bambu_light_mode"] = current_light_mode;
@@ -1840,7 +1844,8 @@ void parseFullReport(JsonObject doc) {
   int newLayerNum = current_layer;
   const char* newWifiSignal = current_wifi_signal.c_str();
   bool lightModeFound = false;
-  int newPrintSubStage = -1; // <-- NEW
+  bool gcodeStateFound = false; // <-- NEW
+  int newPrintSubStage = -1; 
 
   // --- Get Light Mode (NEW LOGIC) ---
   // 1. Check for "lights_report" array inside "print" (for Type 3 messages)
@@ -1873,7 +1878,10 @@ void parseFullReport(JsonObject doc) {
 
 
   // Get print data (we already know 'print' is not null)
-  newGcodeState = print_data["gcode_state"] | current_gcode_state.c_str();
+  if (print_data.containsKey("gcode_state")) { // <-- NEW
+      newGcodeState = print_data["gcode_state"] | current_gcode_state.c_str();
+      gcodeStateFound = true;
+  }
   
   // --- NEW: Check for both percentage keys ---
   if (print_data.containsKey("print_percentage")) {
@@ -1888,7 +1896,7 @@ void parseFullReport(JsonObject doc) {
   newNozzleTargetTemp = print_data["nozzle_target_temper"] | current_nozzle_target_temp;
   newTimeRemaining = print_data["mc_remaining_time"] | current_time_remaining;
   newLayerNum = print_data["layer_num"] | current_layer;
-  newPrintSubStage = print_data["mc_print_sub_stage"] | -1; // <-- NEW
+  newPrintSubStage = print_data["mc_print_sub_stage"] | -1;
 
   // Get WiFi signal (can be in system or print)
   if (!system_data.isNull() && system_data.containsKey("wifi_signal")) {
@@ -1903,7 +1911,15 @@ void parseFullReport(JsonObject doc) {
       lightModeFound = true; // Mark it as found
       Serial.println("Inferred light 'on' from mc_print_sub_stage: 1");
   }
-  // --- End New ---
+  // --- END New ---
+
+  // --- NEW LOGIC ---
+  // If gcode_state was missing, but we have print progress, infer state
+  if (!gcodeStateFound && (newPrintPercentage > 0 || newLayerNum > 0) && strcmp(newGcodeState, "IDLE") == 0) {
+      newGcodeState = "RUNNING";
+      Serial.println("Inferred state 'RUNNING' from print progress.");
+  }
+  // --- END NEW LOGIC ---
 
   // --- Call the state updater ---
   updatePrinterState(String(newGcodeState), newPrintPercentage, String(newChamberLightMode), newBedTemp, newNozzleTemp, String(newWifiSignal), newBedTargetTemp, newNozzleTargetTemp, newTimeRemaining, newLayerNum);
@@ -1925,6 +1941,8 @@ void parseDeltaUpdate(JsonArray arr) {
   int newTimeRemaining = current_time_remaining;
   int newLayerNum = current_layer;
   String newWifiSignal = current_wifi_signal;
+  bool gcodeStateFound = false; // <-- NEW
+  bool progressFound = false; // <-- NEW
 
   // Iterate the array (can contain multiple updates)
   for (JsonObject node : arr) {
@@ -1966,24 +1984,28 @@ void parseDeltaUpdate(JsonArray arr) {
       // --- Found gcode_state! ---
       else if (strcmp(nodeName, "gcode_state") == 0) {
           newGcodeState = node["value"] | current_gcode_state.c_str();
+          gcodeStateFound = true; // <-- NEW
           Serial.print("Received gcode_state delta update. New state: ");
           Serial.println(newGcodeState);
       }
       // --- Found print_percentage! ---
       else if (strcmp(nodeName, "print_percentage") == 0) {
           newPrintPercentage = node["value"] | current_print_percentage;
+          progressFound = true; // <-- NEW
           Serial.print("Received print_percentage delta update. New value: ");
           Serial.println(newPrintPercentage);
       }
       // --- Found mc_percent! ---
       else if (strcmp(nodeName, "mc_percent") == 0) {
           newPrintPercentage = node["value"] | current_print_percentage;
+          progressFound = true; // <-- NEW
           Serial.print("Received mc_percent delta update. New value: ");
           Serial.println(newPrintPercentage);
       }
       // --- Found layer_num! ---
       else if (strcmp(nodeName, "layer_num") == 0) {
           newLayerNum = node["value"] | current_layer;
+          progressFound = true; // <-- NEW
           Serial.print("Received layer_num delta update. New value: ");
           Serial.println(newLayerNum);
       }
@@ -2008,6 +2030,13 @@ void parseDeltaUpdate(JsonArray arr) {
           }
       }
   }
+
+  // --- NEW LOGIC ---
+  if (!gcodeStateFound && progressFound && newGcodeState == "IDLE") {
+      newGcodeState = "RUNNING";
+      Serial.println("Inferred state 'RUNNING' from delta print progress.");
+  }
+  // --- END NEW LOGIC ---
 
   // --- Call the state updater ---
   // This function is now called *after* the loop, so it batches all delta changes
