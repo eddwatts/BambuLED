@@ -53,7 +53,7 @@ void updateLEDs() {
     return;
   }
 
-  // --- Animation Logic from Suggestion 1 ---
+  // --- Animation Logic ---
 
   if (current_gcode_state == "PAUSED") {
     
