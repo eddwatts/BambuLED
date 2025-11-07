@@ -107,7 +107,7 @@ Once connected, you can access the controller by visiting its IP address in a we
 *  **Manual Control:** Buttons to turn the external light **On**, **Off**, or set it back to **Auto** mode.
 
 ### Configuration Page (`/config`)
-![alt text](https://github.com/eddwatts/BambuLED/blob/bf4384a51684fe2ba9794a04d4fef1aa608faa1a/Screenshot%20config.png "Config Page")
+![alt text](https://github.com/eddwatts/BambuLED/blob/8445dd3f65be4448c6a89b5107ff864ef8ba02c7/Screenshot%20config.png "Config Page")
 
  This page allows you to change *all* device settings (except for WiFi) *after* the initial setup.
 *  **Printer Settings:** Change the IP, Serial, or Access Code.
