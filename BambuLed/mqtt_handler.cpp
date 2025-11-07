@@ -2,10 +2,63 @@
 #include "config.h"
 #include "light_controller.h"
 #include "led_controller.h"
-#include <WiFi.h> // <-- ADDED for WiFi.status()
+#include "web_handlers.h" // <-- Include for broadcastWebSocketStatus
+#include <WiFi.h> 
 
-// MQTT History definition
- std::deque<String> mqtt_history;
+// --- FIX for Highlighted Log ---
+// MQTT History definition (now uses the struct)
+std::deque<MqttLogEntry> mqtt_history;
+// --- END FIX ---
+
+// --- Helper function for logging MQTT errors (Suggestion 7) ---
+void logMqttDisconnectReason(int8_t rc) {
+  String reason;
+  switch (rc) {
+    case MQTT_CONNECTION_TIMEOUT:
+      reason = "Connection timeout";
+      break;
+    case MQTT_CONNECTION_LOST:
+      reason = "Connection lost";
+      break;
+    case MQTT_CONNECT_FAILED:
+      reason = "Connect failed";
+      break;
+    case MQTT_DISCONNECTED:
+      reason = "Disconnected";
+      break;
+    case MQTT_CONNECT_BAD_PROTOCOL:
+      reason = "Bad protocol";
+      break;
+    case MQTT_CONNECT_BAD_CLIENT_ID:
+      reason = "Bad client ID";
+      break;
+    case MQTT_CONNECT_UNAVAILABLE:
+      reason = "Server unavailable";
+      break;
+    case MQTT_CONNECT_BAD_CREDENTIALS:
+      reason = "Bad credentials (check access code?)";
+      break;
+    case MQTT_CONNECT_UNAUTHORIZED:
+      reason = "Unauthorized";
+      break;
+    default:
+      reason = "Unknown error";
+      break;
+  }
+  Serial.print("failed (rc=");
+  Serial.print(rc);
+  Serial.print(") - ");
+  Serial.println(reason);
+
+  // --- FIX for Highlighted Log ---
+  // Add this error to the log as a highlighted entry
+  String log_entry = getTimestamp() + " MQTT Error: " + reason;
+  mqtt_history.push_back({log_entry, true}); // highlight = true
+  if(mqtt_history.size() > MAX_HISTORY_SIZE) {
+    mqtt_history.pop_front();
+  }
+  // --- END FIX ---
+}
 
 
 void setupMQTT() {
@@ -42,17 +95,29 @@ bool reconnectMQTT() {
 
   if (client.connect(clientId.c_str(), "bblp", config.bbl_access_code)) {
     Serial.println("connected");
+    
+    // --- FIX for Highlighted Log ---
+    String log_entry = getTimestamp() + " MQTT Connected. Subscribing to topic...";
+    mqtt_history.push_back({log_entry, true}); // highlight = true
+    if(mqtt_history.size() > MAX_HISTORY_SIZE) {
+      mqtt_history.pop_front();
+    }
+    // --- END FIX ---
+
     if(client.subscribe(mqtt_topic_status.c_str())){
          Serial.print("Resubscribed to: ");
          Serial.println(mqtt_topic_status);
     } else {
          Serial.println("Resubscribe failed!");
+         mqtt_history.push_back({getTimestamp() + " MQTT Subscribe FAILED!", true});
+         if(mqtt_history.size() > MAX_HISTORY_SIZE) {
+            mqtt_history.pop_front();
+         }
     }
     return true;
   } else {
-    Serial.print("failed, rc=");
-    Serial.print(client.state());
-    Serial.println("");
+    // --- Use new log function from Suggestion 7 ---
+    logMqttDisconnectReason(client.state());
     return false;
   }
 }
@@ -61,12 +126,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   char messageBuffer[length + 1];
   memcpy(messageBuffer, payload, length);
   messageBuffer[length] = '\0';
-
+  
   String log_entry = getTimestamp() + " " + messageBuffer;
-  mqtt_history.push_back(log_entry);
-  if(mqtt_history.size() > MAX_HISTORY_SIZE) {
-    mqtt_history.pop_front();
-  }
 
   DynamicJsonDocument doc(JSON_DOC_SIZE + 256);
   DeserializationError error = deserializeJson(doc, messageBuffer);
@@ -74,15 +135,37 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if (error) {
     Serial.print("MQTT JSON Parse Error: ");
     Serial.println(error.c_str());
+    log_entry += " [ERROR: Failed to parse JSON]";
+    // --- FIX for Highlighted Log ---
+    mqtt_history.push_back({log_entry, true}); // highlight = true (it's an error)
+    // --- END FIX ---
     return;
   }
 
   if (doc.is<JsonObject>()) {
+      // --- FIX for Highlighted Log ---
+      // Full reports are routine, so don't highlight them
+      mqtt_history.push_back({log_entry, false}); // highlight = false
+      // --- END FIX ---
       parseFullReport(doc.as<JsonObject>());
+      
   } else if (doc.is<JsonArray>()) {
+      // --- FIX for Highlighted Log ---
+      // Delta updates are state changes, so highlight them
+      mqtt_history.push_back({log_entry, true}); // highlight = true
+      // --- END FIX ---
       parseDeltaUpdate(doc.as<JsonArray>());
   } else {
       Serial.println("Received unknown JSON type.");
+      log_entry += " [ERROR: Unknown JSON type]";
+      // --- FIX for Highlighted Log ---
+      mqtt_history.push_back({log_entry, true}); // highlight = true
+      // --- END FIX ---
+  }
+  
+  // --- Common code for log history ---
+  if(mqtt_history.size() > MAX_HISTORY_SIZE) {
+    mqtt_history.pop_front();
   }
 }
 
@@ -275,11 +358,16 @@ void parseDeltaUpdate(JsonArray arr) {
 }
 
 void updatePrinterState(String gcodeState, int printPercentage, String chamberLightMode, float bedTemp, float nozzleTemp, String wifiSignal, float bedTargetTemp, float nozzleTargetTemp, int timeRemaining, int layerNum, int stage) {
+  
+  bool stateChanged = false;
+  if (gcodeState != current_gcode_state) stateChanged = true;
+  
   if ( (gcodeState == "RUNNING" || gcodeState == "PAUSED") && (stage == 255 || printPercentage == 100) ) 
   {
       if (current_gcode_state != "FINISH") {
           Serial.printf("Inferred state 'FINISH' from stg_cur=%d or percentage=%d.\n", stage, printPercentage);
           gcodeState = "FINISH";
+          stateChanged = true;
       }
   }
 
@@ -319,6 +407,13 @@ void updatePrinterState(String gcodeState, int printPercentage, String chamberLi
   }
 
   updateLEDs();
+  
+  // --- FIX for WebSockets (Suggestion 3) ---
+  // Only broadcast if the state actually changed, or 
+  // if it's a RUNNING state (to catch % updates)
+  if (stateChanged || gcodeState == "RUNNING") {
+    broadcastWebSocketStatus(); // PUSH the update to all web clients!
+  }
 }
 
 void handleMQTTConnection() {

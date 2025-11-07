@@ -6,19 +6,22 @@
 #include <ArduinoJson.h>
 #include <WebSocketsServer.h> // <-- Added for WebSockets
 
-// External declaration for the WebSocket server instance from the .ino file
-extern WebSocketsServer webSocket;
+// --- External Declarations ---
+extern WebSocketsServer webSocket; // From BambuLedNew.ino
+// No need to extern mqtt_history, it's included via mqtt_handler.h
 
-// --- PROGMEM HTML for Root Page  ---
+
+// --- PROGMEM HTML Page Definitions ---
+
+// --- PAGE_ROOT (Main Status Page) ---
 const char PAGE_ROOT[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="UTF-K">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Bambu Light Status</title>
-  
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath fill='%23378cf0' d='M50 0C27.9 0 10 17.9 10 40c0 14.9 8.2 27.8 20 34.8V85c0 2.8 2.2 5 5 5h30c2.8 0 5-2.2 5-5v-10.2c11.8-7 20-19.9 20-34.8C90 17.9 72.1 0 50 0zM50 75h-0.1V67.8c-1.6 0.1-3.2 0.2-4.9 0.2s-3.3-0.1-4.9-0.2V75H25V62.4c-9.1-5.9-15-16.1-15-27.4C10 17.8 27.8 0 50 0s40 17.8 40 40c0 11.3-5.9 21.5-15 27.4V75h-15V67.8c-1.6 0.1-3.2 0.2-4.9 0.2s-3.3-0.1-4.9-0.2V75z'/%3E%3C/svg%3E">
-  
   <style>
     :root {
       --bg-color: #1a1a1b;
@@ -50,8 +53,13 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
       border-bottom: 2px solid var(--primary-color);
       padding-bottom: 1rem;
     }
-    .logo { flex-shrink: 0; }
-    h1 { margin: 0; font-size: 1.75rem; }
+    .logo {
+      flex-shrink: 0;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.75rem;
+    }
     h2 { 
       color: var(--text-color-bright);
       border-bottom: 1px solid var(--border-color);
@@ -89,7 +97,11 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
     .light-on { background-color: #1c314a; color: #9cc2ef; border-color: #335d88; }
     .error { background-color: #401f22; color: #f0989f; border-color: #7c333a; font-weight: bold; }
     
-    .button-group { display: flex; gap: 10px; flex-wrap: wrap; }
+    .button-group {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
     button, .button { 
       background-color: var(--primary-color); 
       color: var(--text-color-bright); 
@@ -102,25 +114,33 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
       text-decoration: none;
       transition: background-color 0.2s, transform 0.1s;
     }
-    button:hover { background-color: #58a6ff; }
-    button:active { transform: scale(0.98); }
+    button:hover, .button:hover {
+      opacity: 0.85;
+    }
+    button:active, .button:active {
+      transform: scale(0.98);
+    }
     button.off, .button.off { background-color: var(--grey-color); }
     button.auto, .button.auto { background-color: var(--green-color); }
     button.danger, .button.danger { background-color: var(--red-color); }
-    .vled { transition: background-color 0.5s, opacity 0.5s; }
-    small { color: var(--text-color-muted); font-size: 0.9rem; }
+
+    .vled {
+      transition: background-color 0.5s, opacity 0.5s;
+    }
+    small {
+      color: var(--text-color-muted);
+      font-size: 0.9rem;
+    }
   </style>
 </head>
 <body>
-  
   <div class="logo_title_wrapper">
     <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="#378cf0" width="50" height="50">
       <path d="M50 0C27.9 0 10 17.9 10 40c0 14.9 8.2 27.8 20 34.8V85c0 2.8 2.2 5 5 5h30c2.8 0 5-2.2 5-5v-10.2c11.8-7 20-19.9 20-34.8C90 17.9 72.1 0 50 0zM50 75h-0.1V67.8c-1.6 0.1-3.2 0.2-4.9 0.2s-3.3-0.1-4.9-0.2V75H25V62.4c-9.1-5.9-15-16.1-15-27.4C10 17.8 27.8 0 50 0s40 17.8 40 40c0 11.3-5.9 21.5-15 27.4V75h-15V67.8c-1.6 0.1-3.2 0.2-4.9 0.2s-3.3-0.1-4.9-0.2V75z"/>
     </svg>
     <h1>Bambu Light Controller</h1>
   </div>
-  
-  
+
   <div class="status_grid">
     <div id="wifi-status-div" class="status {{WIFI_STATUS_CLASS}}">
       <strong>WiFi Status</strong>
@@ -130,7 +150,7 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
     <div id="mqtt-status-div" class="status disconnected">
       <strong>MQTT Status</strong>
       <span id="mqtt-status" class="data">DISCONNECTED</span>
-      <br><small><a href="/mqtt" target="_blank">View MQTT History</a></small>
+      <br><small><a href="/mqtt" target="_blank" style="color: var(--text-color-bright);">View MQTT History</a></small>
     </div>
   </div>
 
@@ -168,10 +188,10 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
   </div>
 
   <h2>Manual Control</h2>
-  <div class="button-group">
-    <button id="btn-on" class="button">Turn Light ON</button>
-    <button id="btn-off" class="button off">Turn Light OFF</button>
-    <button id="btn-auto" class="button auto">Set to AUTO</button>
+  <div class="button-group" id="button-controls">
+    <button id="btn-light-on">Turn Light ON</button>
+    <button id="btn-light-off" class="off">Turn Light OFF</button>
+    <button id="btn-light-auto" class="auto">Set to AUTO</button>
   </div>
 
   <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 2rem 0;">
@@ -181,7 +201,7 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
   </div>
   
   <script>
-    var ws;
+    let ws;
     
     function formatTime(s) {
       if (s <= 0) return '--:--:--';
@@ -237,21 +257,31 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
             led.style.opacity = opacity;
           });
         }
-      } catch (e) { console.error('Error updating UI:', e); }
+      } catch (e) {
+        console.error('Error updating UI:', e);
+      }
     }
 
     function connectWebSocket() {
       console.log('Connecting WebSocket...');
       ws = new WebSocket('ws://' + window.location.hostname + ':81/');
-      ws.onopen = function() { console.log('WebSocket connected.'); };
-      ws.onmessage = function(evt) {
-        const data = JSON.parse(evt.data);
-        updateUI(data);
+
+      ws.onopen = function() {
+        console.log('WebSocket connected.');
       };
+
+      ws.onmessage = function(evt) {
+        // New message from server!
+        const data = JSON.parse(evt.data);
+        updateUI(data); // Update the page
+      };
+
       ws.onclose = function() {
         console.log('WebSocket disconnected. Reconnecting in 3s...');
+        // Try to reconnect every 3 seconds
         setTimeout(connectWebSocket, 3000);
       };
+
       ws.onerror = function(err) {
         console.error('WebSocket Error:', err);
         ws.close();
@@ -261,21 +291,15 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
     document.addEventListener('DOMContentLoaded', () => {
       connectWebSocket();
       
-      // Add click listeners for WebSocket buttons
-      document.getElementById('btn-on').addEventListener('click', (e) => {
-        e.preventDefault();
-        console.log('Sending LIGHT_ON');
-        ws.send('LIGHT_ON');
+      // Add click handlers for WebSocket control
+      document.getElementById('btn-light-on').addEventListener('click', () => {
+        if(ws) ws.send('LIGHT_ON');
       });
-      document.getElementById('btn-off').addEventListener('click', (e) => {
-        e.preventDefault();
-        console.log('Sending LIGHT_OFF');
-        ws.send('LIGHT_OFF');
+      document.getElementById('btn-light-off').addEventListener('click', () => {
+        if(ws) ws.send('LIGHT_OFF');
       });
-      document.getElementById('btn-auto').addEventListener('click', (e) => {
-        e.preventDefault();
-        console.log('Sending LIGHT_AUTO');
-        ws.send('LIGHT_AUTO');
+      document.getElementById('btn-light-auto').addEventListener('click', () => {
+        if(ws) ws.send('LIGHT_AUTO');
       });
     });
   </script>
@@ -283,177 +307,178 @@ const char PAGE_ROOT[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
-// --- PROGMEM HTML for Config Page ---
+
+// --- PAGE_CONFIG (Configuration Page) ---
 const char PAGE_CONFIG[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html><head>
-    <meta name='viewport' content='width=device-width, initial-scale=1'>
-    <title>Bambu Light Config</title><style>
-    body{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;margin:20px;background:#1a1a1b;color:#e0e0e0;}
-    h1,h2,h3{color:#fff;} h2{border-bottom:2px solid #378cf0;padding-bottom:5px;}
-    form{background:#2c2c2e;padding:20px;border-radius:8px;}
-    div{margin-bottom:15px;} label{display:block;margin-bottom:5px;font-weight:bold;color:#ccc;}
-    input[type='text'],input[type='number'],input[type='password'],select{width:98%;max-width:400px;padding:8px;border:1px solid #555;border-radius:4px;font-family:Arial,sans-serif;font-size:1em;background-color:#3a3a3c;color:#e0e0e0;}
-    input[type='checkbox']{margin-right:10px;vertical-align:middle;}
-    label[for='invert'], label[for='chamber_timeout'], label[for='led_finish_timeout'] { display:inline-block;font-weight:normal; }
-    button, .button { 
-      background-color: #378cf0; color: #ffffff; padding: 12px 20px; border: none; 
-      border-radius: 5px; cursor: pointer; font-size: 16px; text-decoration: none; display: inline-block;
-      font-weight: 500;
-    }
-    button:hover{background-color:#0056b3;}
-    .color-input{width:100px;padding:8px;vertical-align:middle;margin-left:10px;border:1px solid #555;}
-    .grid{display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));grid-gap:20px;}
-    .card{background:#3a3a3c;padding:15px;border-radius:5px;border:1px solid #555;}
-    small{color:#aaa;} a{color:#58a6ff;}
-    .color-swatch{width: 20px; height: 20px; display: inline-block; vertical-align: middle; margin-left: 10px; border: 1px solid #555; border-radius: 4px; background-color: #000;}
-    button.danger, .button.danger { background-color: #dc3545; }
-    </style></head><body><h1>Bambu Light Controller Settings</h1>
-    <p><small>To change Wi-Fi, use the 'Factory Reset' pin (GPIO 16) on boot.</small></p>
-    <form action='/config' method='POST'>
-    <h2>Printer Settings</h2>
-    <div><label for='ip'>Bambu Printer IP</label><input type='text' id='ip' name='ip' value='{{BBL_IP}}'></div>
-    <div><label for='serial'>Printer Serial</label><input type='text' id='serial' name='serial' value='{{BBL_SERIAL}}'></div>
-    <div><label for='code'>Access Code (MQTT Pass)</label><input type='password' id='code' name='code' value='{{BBL_CODE}}'></div>
-    <h2>Time Settings</h2>
-    <div class='grid'>
-    <div class='card'><div><label for='ntp_server'>NTP Server</label><input type='text' id='ntp_server' name='ntp_server' value='{{NTP_SERVER}}'></div></div>
-    <div class='card'><div><label for='timezone'>Timezone</label>{{TIMEZONE_DROPDOWN}}</div></div>
-    </div>
-    <h2>External Light Settings</h2>
-    <div class='grid'>
-    <div class='card'><div><label for='lightpin'>External Light GPIO Pin</label><input type='number' id='lightpin' name='lightpin' min='0' max='39' value='{{LIGHT_PIN}}'></div>
-    <div><label for='chamber_bright'>Brightness (0-100%)</label><input type='number' id='chamber_bright' name='chamber_bright' min='0' max='100' value='{{CHAMBER_BRIGHT}}'></div></div>
-    <div class='card'><div><input type='checkbox' id='invert' name='invert' value='1' {{INVERT_CHECKED}}><label for='invert'>Invert Light Logic (Active LOW)</label></div>
-    <div><input type='checkbox' id='chamber_timeout' name='chamber_timeout' value='1' {{CHAMBER_TIMEOUT_CHECKED}}><label for='chamber_timeout'>Enable 2-Min Finish Timeout (Light OFF)</label></div></div>
-    </div>
-    <h2>LED Status Bar Settings</h2>
-    <div class='grid'>
-    <div class='card'><div><label for='numleds'>Number of WS2812B LEDs (Max {{MAX_LEDS}})</label><input type='number' id='numleds' name='numleds' min='0' max='{{MAX_LEDS}}' value='{{NUM_LEDS}}'></div></div>
-    <div class='card'><div><label for='led_color_order'>LED Color Order</label>{{LED_ORDER_DROPDOWN}}</div></div>
-    </div>
-    <div><small>LED Data Pin is hardcoded to GPIO {{LED_DATA_PIN}} for FastLED.</small></div>
-    <div><input type='checkbox' id='led_finish_timeout' name='led_finish_timeout' value='1' {{LED_TIMEOUT_CHECKED}}><label for='led_finish_timeout'>Enable 2-Min Finish Timeout (LEDs return to Idle)</label></div>
-    <h3>Virtual LED Preview</h3>
-    <div class='card' style='padding: 20px; background-color: #2c2c2e; border: 1px solid #555; border-radius: 5px;'>
-    <div id='virtual-bar-container'>
-    <div id='virtual-bar' style='display: flex; width: 100%; height: 30px; background: #222; border-radius: 5px; overflow: hidden; border: 1px solid #555;'>
-    {{VIRTUAL_LEDS}}
-    </div></div>
-    <div id='preview-controls' style='margin-top: 15px; display: flex; flex-wrap: wrap; gap: 15px;'>
-    <label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='idle' onchange='updatePreview()' checked> Idle</label>
-    <label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='print' onchange='updatePreview()'> Printing</label>
-    <label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='pause' onchange='updatePreview()'> Paused</label>
-    <label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='error' onchange='updatePreview()'> Error</label>
-    <label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='finish' onchange='updatePreview()'> Finish</label>
-    </div></div>
-    <h3>LED States</h3><div class='grid'>
-    <div class='card'><h4>Idle Status</h4>
-    <div><label for='idle_color'>Color (RRGGBB) <span id='idle_color_swatch' class='color-swatch'></span></label><input type='text' id='idle_color' name='idle_color' value='{{IDLE_COLOR}}' oninput='updatePreview(); try { document.getElementById("idle_color_picker").value = "#" + this.value; } catch(e) {}'><input type='color' class='color-input' id='idle_color_picker' value='#{{IDLE_COLOR}}' onchange='document.getElementById("idle_color").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>
-    <div><label for='idle_bright'>Brightness (0-255)</label><input type='number' id='idle_bright' name='idle_bright' min='0' max='255' value='{{IDLE_BRIGHT}}' oninput='updatePreview()'></div></div>
-    <div class='card'><h4>Printing Status</h4>
-    <div><label for='print_color'>Color (RRGGBB) <span id='print_color_swatch' class='color-swatch'></span></label><input type='text' id='print_color' name='print_color' value='{{PRINT_COLOR}}' oninput='updatePreview(); try { document.getElementById("print_color_picker").value = "#" + this.value; } catch(e) {}'><input type='color' class='color-input' id='print_color_picker' value='#{{PRINT_COLOR}}' onchange='document.getElementById("print_color").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>
-    <div><label for='print_bright'>Brightness (0-255)</label><input type='number' id='print_bright' name='print_bright' min='0' max='255' value='{{PRINT_BRIGHT}}' oninput='updatePreview()'></div></div>
-    <div class='card'><h4>Paused Status</h4>
-    <div><label for='pause_color'>Color (RRGGBB) <span id='pause_color_swatch' class='color-swatch'></span></label><input type='text' id='pause_color' name='pause_color' value='{{PAUSE_COLOR}}' oninput='updatePreview(); try { document.getElementById("pause_color_picker").value = "#" + this.value; } catch(e) {}'><input type='color' class='color-input' id='pause_color_picker' value='#{{PAUSE_COLOR}}' onchange='document.getElementById("pause_color").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>
-    <div><label for='pause_bright'>Brightness (0-255)</label><input type='number' id='pause_bright' name='pause_bright' min='0' max='255' value='{{PAUSE_BRIGHT}}' oninput='updatePreview()'></div></div>
-    <div class='card'><h4>Error Status</h4>
-    <div><label for='error_color'>Color (RRGGBB) <span id='error_color_swatch' class='color-swatch'></span></label><input type='text' id='error_color' name='error_color' value='{{ERROR_COLOR}}' oninput='updatePreview(); try { document.getElementById("error_color_picker").value = "#" + this.value; } catch(e) {}'><input type='color' class='color-input' id='error_color_picker' value='#{{ERROR_COLOR}}' onchange='document.getElementById("error_color").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>
-    <div><label for='error_bright'>Brightness (0-255)</label><input type='number' id='error_bright' name='error_bright' min='0' max='255' value='{{ERROR_BRIGHT}}' oninput='updatePreview()'></div></div>
-    <div class='card'><h4>Finish Status</h4>
-    <div><label for='finish_color'>Color (RRGGBB) <span id='finish_color_swatch' class='color-swatch'></span></label><input type='text' id='finish_color' name='finish_color' value='{{FINISH_COLOR}}' oninput='updatePreview(); try { document.getElementById("finish_color_picker").value = "#" + this.value; } catch(e) {}'><input type='color' class='color-input' id='finish_color_picker' value='#{{FINISH_COLOR}}' onchange='document.getElementById("finish_color").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>
-    <div><label for='finish_bright'>Brightness (0-255)</label><input type='number' id='finish_bright' name='finish_bright' min='0' max='255' value='{{FINISH_BRIGHT}}' oninput='updatePreview()'></div></div>
-    </div>
-    <br><div><button type='submit'>Save and Reboot</button></div>
-    </form>
-    <h2>Backup & Restore</h2>
-    <div class='grid'>
-    <div class='card'><p>Download a backup of your current settings.</p><a href='/backup' class='button' style='background-color:#17a2b8;'>Backup Configuration</a></div>
-    <div class='card'><p>Upload a 'config.json' file to restore settings. <b>This will reboot the device.</b></p><a href='/restore' class='button danger'>Restore Configuration</a></div>
-    </div>
-    <h2>Device Management</h2>
-    <div class='grid'>
-      <div class='card'>
-        <p>Reboot the device. This does not change settings.</p>
-        <a href='/reboot' onclick="return confirm('Are you sure you want to reboot?');">
-          <button type='button' style='background-color:#ffc107; color: #1a1a1b;'>Reboot Device</button>
-        </a>
-      </div>
-      <div class='card'>
-        <p><b>DANGER:</b> Wipes all settings (including Wi-Fi) and reboots.</p>
-        <a href='/factory_reset' onclick="return confirm('WARNING: This will wipe ALL settings. Are you sure?');">
-          <button type='button' class='danger'>Factory Reset</button>
-        </a>
-      </div>
-    </div>
-    <br><p><a href='/'>&laquo; Back to Status Page</a></p>
-    <script>
-    function updatePreview() {
-      try {
-        let state = document.querySelector('input[name=\"preview_state\"]:checked').value;
-        let color = document.getElementById(state + '_color').value;
-        if (!color.match(/^[0-9a-fA-F]{6}$/)) { color = '000000'; }
-        let bright = parseInt(document.getElementById(state + '_bright').value, 10);
-        if (isNaN(bright) || bright < 0 || bright > 255) { bright = 0; }
-        let opacity = (bright / 255).toFixed(2);
-        let vleds = document.querySelectorAll('.vled');
-        vleds.forEach(led => {
-          led.style.backgroundColor = '#' + color;
-          led.style.opacity = opacity;
-        });
-        let states = ['idle', 'print', 'pause', 'error', 'finish'];
-        states.forEach(s => {
-          let c = document.getElementById(s + '_color').value;
-          if (!c.match(/^[0-9a-fA-F]{6}$/)) { c = '000000'; }
-          document.getElementById(s + '_color_swatch').style.backgroundColor = '#' + c;
-        });
-      } catch (e) { console.error('Preview update failed:', e); }
-    }
-    document.addEventListener('DOMContentLoaded', updatePreview);
-    </script>
-    </body></html>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>Bambu Light Config</title><style>
+body{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;margin:20px;background:#1a1a1b;color:#e0e0e0;max-width: 900px; margin: 0 auto; padding: 1rem;}
+h1,h2,h3{color:#fff;} h2{border-bottom:2px solid #378cf0;padding-bottom:5px; margin-top: 2rem;}
+form{background:#2c2c2e;padding:20px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);}
+div{margin-bottom:15px;} label{display:block;margin-bottom:5px;font-weight:bold;color:#ccc;}
+input[type='text'],input[type='number'],input[type='password'],select{width:98%;max-width: 98%;padding:8px;border:1px solid #555;border-radius:4px;font-family:Arial,sans-serif;font-size:1em;background-color:#3a3a3c;color:#e0e0e0;}
+input[type='checkbox']{margin-right:10px;vertical-align:middle;}
+label[for='invert'], label[for='chamber_timeout'], label[for='led_finish_timeout'] { display:inline-block;font-weight:normal; }
+button, .button{background-color:#378cf0;color:#ffffff;padding:12px 20px;border:none;border-radius:5px;cursor:pointer;font-size:16px; text-decoration: none; display: inline-block; margin-top: 10px;}
+button:hover{opacity: 0.85;}
+.color-input{width:100px;padding:8px;vertical-align:middle;margin-left:10px;border:1px solid #555;}
+.grid{display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));grid-gap:20px;}
+.card{background:#3a3a3c;padding:15px;border-radius:5px;border:1px solid #555;}
+small{color:#aaa;}
+a{color:#58a6ff;}
+.color-swatch{width: 20px; height: 20px; display: inline-block; vertical-align: middle; margin-left: 10px; border: 1px solid #555; border-radius: 4px; background-color: #000;}
+.danger{background-color:#dc3545;}
+</style></head><body><h1>Bambu Light Controller Settings</h1>
+<p><small>To change Wi-Fi, use the 'Factory Reset' pin (GPIO 16) on boot.</small></p>
+<form action='/config' method='POST'>
+<h2>Printer Settings</h2>
+<div><label for='ip'>Bambu Printer IP</label><input type='text' id='ip' name='ip' value='{{BBL_IP}}'></div>
+<div><label for='serial'>Printer Serial</label><input type='text' id='serial' name='serial' value='{{BBL_SERIAL}}'></div>
+<div><label for='code'>Access Code (MQTT Pass)</label><input type='password' id='code' name='code' value='{{BBL_CODE}}'></div>
+<h2>Time Settings</h2>
+<div class='grid'>
+<div class='card'><div><label for='ntp_server'>NTP Server</label><input type='text' id='ntp_server' name='ntp_server' value='{{NTP_SERVER}}'></div></div>
+<div class='card'><div><label for='timezone'>Timezone</label>{{TZ_DROPDOWN}}</div></div>
+</div>
+<h2>External Light Settings</h2>
+<div class='grid'>
+<div class='card'><div><label for='lightpin'>External Light GPIO Pin</label><input type='number' id='lightpin' name='lightpin' min='0' max='39' value='{{LIGHT_PIN}}'></div>
+<div><label for='chamber_bright'>Brightness (0-100%)</label><input type='number' id='chamber_bright' name='chamber_bright' min='0' max='100' value='{{CHAMBER_BRIGHT}}'></div></div>
+<div class='card'><div><input type='checkbox' id='invert' name='invert' value='1' {{INVERT_CHECK}}><label for='invert'>Invert Light Logic (Active LOW)</label></div>
+<div><input type='checkbox' id='chamber_timeout' name='chamber_timeout' value='1' {{CHAMBER_TIMEOUT_CHECK}}><label for='chamber_timeout'>Enable 2-Min Finish Timeout (Light OFF)</label></div></div>
+</div>
+<h2>LED Status Bar Settings</h2>
+<div class='grid'>
+<div class='card'><div><label for='numleds'>Number of WS2812B LEDs (Max {{MAX_LEDS}})</label><input type='number' id='numleds' name='numleds' min='0' max='{{MAX_LEDS}}' value='{{NUM_LEDS}}'></div></div>
+<div class='card'><div><label for='led_color_order'>LED Color Order</label>{{LED_ORDER_DROPDOWN}}</div></div>
+</div>
+<div><small>LED Data Pin is hardcoded to GPIO {{LED_PIN}} for FastLED.</small></div>
+<div><input type='checkbox' id='led_finish_timeout' name='led_finish_timeout' value='1' {{LED_TIMEOUT_CHECK}}><label for='led_finish_timeout'>Enable 2-Min Finish Timeout (LEDs return to Idle)</label></div>
+<h3>Virtual LED Preview</h3>
+<div class='card' style='padding: 20px; background-color: #2c2c2e; border: 1px solid #555; border-radius: 5px;'>
+<div id='virtual-bar-container'><div id='virtual-bar' style='display: flex; width: 100%; height: 30px; background: #222; border-radius: 5px; overflow: hidden; border: 1px solid #555;'>
+{{VLED_PREVIEW}}
+</div></div>
+<div id='preview-controls' style='margin-top: 15px; display: flex; flex-wrap: wrap; gap: 15px;'>
+<label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='idle' onchange='updatePreview()' checked> Idle</label>
+<label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='print' onchange='updatePreview()'> Printing</label>
+<label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='pause' onchange='updatePreview()'> Paused</label>
+<label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='error' onchange='updatePreview()'> Error</label>
+<label style='display:inline-block; color:#e0e0e0;'><input type='radio' name='preview_state' value='finish' onchange='updatePreview()'> Finish</label>
+</div></div>
+<h3>LED States</h3><div class='grid'>
+<div class='card'><h4>Idle Status</h4>
+<div><label for='idle_color'>Color (RRGGBB) <span id='idle_color_swatch' class='color-swatch'></span></label><input type='text' id='idle_color' name='idle_color' value='{{IDLE_COLOR}}' oninput='updatePreview(); try { document.getElementById("idle_color_picker").value = "#" + this.value; } catch(e) {}'><input type='color' class='color-input' id='idle_color_picker' value='#{{IDLE_COLOR}}' onchange='document.getElementById("idle_color").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>
+<div><label for='idle_bright'>Brightness (0-255)</label><input type='number' id='idle_bright' name='idle_bright' min='0' max='255' value='{{IDLE_BRIGHT}}' oninput='updatePreview()'></div></div>
+<div class='card'><h4>Printing Status</h4>
+<div><label for='print_color'>Color (RRGGBB) <span id='print_color_swatch' class='color-swatch'></span></label><input type='text' id='print_color' name='print_color' value='{{PRINT_COLOR}}' oninput='updatePreview(); try { document.getElementById("print_color_picker").value = "#" + this.value; } catch(e) {}'><input type='color' class='color-input' id='print_color_picker' value='#{{PRINT_COLOR}}' onchange='document.getElementById("print_color").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>
+<div><label for='print_bright'>Brightness (0-255)</label><input type='number' id='print_bright' name='print_bright' min='0' max='255' value='{{PRINT_BRIGHT}}' oninput='updatePreview()'></div></div>
+<div class='card'><h4>Paused Status</h4>
+<div><label for='pause_color'>Color (RRGGBB) <span id='pause_color_swatch' class='color-swatch'></span></label><input type='text' id='pause_color' name='pause_color' value='{{PAUSE_COLOR}}' oninput='updatePreview(); try { document.getElementById("pause_color_picker").value = "#" + this.value; } catch(e) {}'><input type='color' class='color-input' id='pause_color_picker' value='#{{PAUSE_COLOR}}' onchange='document.getElementById("pause_color").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>
+<div><label for='pause_bright'>Brightness (0-255)</label><input type='number' id='pause_bright' name='pause_bright' min='0' max='255' value='{{PAUSE_BRIGHT}}' oninput='updatePreview()'></div></div>
+<div class='card'><h4>Error Status</h4>
+<div><label for='error_color'>Color (RRGGBB) <span id='error_color_swatch' class='color-swatch'></span></label><input type='text' id='error_color' name='error_color' value='{{ERROR_COLOR}}' oninput='updatePreview(); try { document.getElementById("error_color_picker").value = "#" + this.value; } catch(e) {}'><input type='color' class='color-input' id='error_color_picker' value='#{{ERROR_COLOR}}' onchange='document.getElementById("error_color").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>
+<div><label for='error_bright'>Brightness (0-255)</label><input type='number' id='error_bright' name='error_bright' min='0' max='255' value='{{ERROR_BRIGHT}}' oninput='updatePreview()'></div></div>
+<div class='card'><h4>Finish Status</h4>
+<div><label for='finish_color'>Color (RRGGBB) <span id='finish_color_swatch' class='color-swatch'></span></label><input type='text' id='finish_color' name='finish_color' value='{{FINISH_COLOR}}' oninput='updatePreview(); try { document.getElementById("finish_color_picker").value = "#" + this.value; } catch(e) {}'><input type='color' class='color-input' id='finish_color_picker' value='#{{FINISH_COLOR}}' onchange='document.getElementById("finish_color").value = this.value.substring(1).toUpperCase(); updatePreview();'></div>
+<div><label for='finish_bright'>Brightness (0-255)</label><input type='number' id='finish_bright' name='finish_bright' min='0' max='255' value='{{FINISH_BRIGHT}}' oninput='updatePreview()'></div></div>
+</div>
+<br><div><button type='submit'>Save and Reboot</button></div>
+</form>
+<h2>Backup & Restore</h2>
+<div class='grid'>
+<div class='card'><p>Download a backup of your current settings.</p><a href='/backup' class='button' style='background-color:#17a2b8;'>Backup Configuration</a></div>
+<div class='card'><p>Upload a 'config.json' file to restore settings. <b>This will reboot the device.</b></p><a href='/restore' class='button danger'>Restore Configuration</a></div>
+</div>
+<h2>Device Management</h2>
+<div class='grid'>
+<div class='card'>
+<p>Reboot the device. This does not change settings.</p>
+<a href='/reboot' onclick="return confirm('Are you sure you want to reboot?');" class='button' style='background-color:#ffc107; color: #1a1a1b;'>Reboot Device</a>
+</div>
+<div class='card'>
+<p><b>DANGER:</b> Wipes all settings (including Wi-Fi) and reboots.</p>
+<a href='/factory_reset' onclick="return confirm('WARNING: This will wipe ALL settings. Are you sure?');" class='button danger'>Factory Reset</a>
+</div>
+</div>
+<br><p><a href='/'>&laquo; Back to Status Page</a></p>
+<script>
+function updatePreview() {
+  try {
+    let state = document.querySelector('input[name="preview_state"]:checked').value;
+    let color = document.getElementById(state + '_color').value;
+    if (!color.match(/^[0-9a-fA-F]{6}$/)) { color = '000000'; }
+    let bright = parseInt(document.getElementById(state + '_bright').value, 10);
+    if (isNaN(bright) || bright < 0 || bright > 255) { bright = 0; }
+    let opacity = (bright / 255).toFixed(2);
+    let vleds = document.querySelectorAll('.vled');
+    vleds.forEach(led => {
+      led.style.backgroundColor = '#' + color;
+      led.style.opacity = opacity;
+    });
+    let states = ['idle', 'print', 'pause', 'error', 'finish'];
+    states.forEach(s => {
+      let c = document.getElementById(s + '_color').value;
+      if (!c.match(/^[0-9a-fA-F]{6}$/)) { c = '000000'; }
+      document.getElementById(s + '_color_swatch').style.backgroundColor = '#' + c;
+    });
+  } catch (e) { console.error('Preview update failed:', e); }
+}
+document.addEventListener('DOMContentLoaded', updatePreview);
+</script>
+</body></html>
 )rawliteral";
 
-// --- PROGMEM HTML for MQTT Page ---
+
+// --- PAGE_MQTT (MQTT Log Page) ---
 const char PAGE_MQTT[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html><head><title>MQTT History</title>
-  <meta name='viewport' content='width=device-width, initial-scale=1'>
-  <style>
-  body{font-family:monospace;margin:20px;background:#1a1a1b;color:#e0e0e0;}
-  h1{color:#fff;font-family:Arial,sans-serif;}
-  p{font-family:Arial,sans-serif;}
-  pre{white-space:pre-wrap;word-wrap:break-word;font-size:0.9em;background:#2c2c2e;padding:10px;border-radius:5px;border:1px solid #444;}
-  a{color:#58a6ff;text-decoration:none;font-family:Arial,sans-serif;}
-  </style></head><body><h1>MQTT Message History</h1>
-  <p>Showing the last {{MSG_COUNT}} of {{MAX_HISTORY_SIZE}} messages (oldest first).</p>
-  <a href='/'>&laquo; Back to Status</a><br><br>
-  <pre>{{MQTT_HISTORY}}</pre>
-  </body></html>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<style>
+body{font-family:monospace;margin:20px;background:#1a1a1b;color:#e0e0e0;max-width: 900px; margin: 0 auto; padding: 1rem;}
+h1{color:#fff;font-family:Arial,sans-serif;}
+p{font-family:Arial,sans-serif;}
+pre{white-space:pre-wrap;word-wrap:break-word;font-size:0.9em;background:#2c2c2e;padding:10px;border-radius:5px;border:1px solid #444;}
+a{color:#58a6ff;text-decoration:none;font-family:Arial,sans-serif;}
+.highlight{
+  color: #f0d061;
+  font-weight: bold;
+}
+</style></head><body><h1>MQTT Message History</h1>
+<p>Showing the last {{MSG_COUNT}} of {{MAX_COUNT}} messages (oldest first).</p>
+<a href='/'>&laquo; Back to Status</a><br><br>
+<pre>{{MQTT_LOGS}}</pre>
+</body></html>
 )rawliteral";
 
-// --- PROGMEM HTML for Restore Page ---
+// --- PAGE_RESTORE (Config Restore Page) ---
 const char PAGE_RESTORE[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html><head><title>Restore Config</title>
-  <style>body{font-family:Arial,sans-serif;margin:20px;background:#1a1a1b;color:#e0e0e0;}
-  h1{color:#fff;} p{color:#e0e0e0;}
-  button{background-color:#dc3545;color:white;padding:12px 20px;border:none;border-radius:5px;cursor:pointer;font-size:16px;}
-  a{color:#58a6ff;}
-  </style></head>
-  <body><h1>Restore Configuration</h1>
-  <p><b>WARNING:</b> This will overwrite your current settings and reboot the device.</p>
-  <form action='/restore' method='POST' enctype='multipart/form-data'>
-  <input type='file' name='restore' accept='.json' required>
-  <br><br><button type='submit'>Upload and Restore</button>
-  </form><br><br><a href='/config'>&laquo; Back to Settings</a></body></html>
+<style>
+body{font-family:Arial,sans-serif;margin:20px;background:#1a1a1b;color:#e0e0e0;max-width: 900px; margin: 0 auto; padding: 1rem;}
+h1{color:#fff;} p{color:#e0e0e0;}
+button, .button{background-color:#dc3545;color:white;padding:12px 20px;border:none;border-radius:5px;cursor:pointer;font-size:16px; text-decoration: none;}
+a{color:#58a6ff;}
+</style></head>
+<body><h1>Restore Configuration</h1>
+<p><b>WARNING:</b> This will overwrite your current settings and reboot the device.</p>
+<form action='/restore' method='POST' enctype='multipart/form-data'>
+<input type='file' name='restore' accept='.json' required style="color:#e0e0e0;">
+<br><br><button type='submit'>Upload and Restore</button>
+</form><br><br><a href='/config'>&laquo; Back to Settings</a></body></html>
 )rawliteral";
 
+
+// --- Function Implementations ---
 
 void setupWebServer() {
   Serial.println("Setting up Web Server...");
   server.on("/", handleRoot);
-  server.on("/status.json", handleStatusJson);
-  server.on("/light/on", handleLightOn);
-  server.on("/light/off", handleLightOff);
-  server.on("/light/auto", handleLightAuto);
+  server.on("/status.json", handleStatusJson); // Kept for API/legacy
+  server.on("/light/on", handleLightOn); // Kept for API/legacy
+  server.on("/light/off", handleLightOff); // Kept for API/legacy
+  server.on("/light/auto", handleLightAuto); // Kept for API/legacy
   server.on("/config", handleConfig);
   server.on("/mqtt", handleMqttJson);
   server.on("/backup", HTTP_GET, handleBackup);
@@ -524,10 +549,9 @@ bool connectWiFi(bool forceReset) {
 }
 
 void handleRoot() {
-  // Create a String from the PROGMEM data
   String html = FPSTR(PAGE_ROOT);
 
-  // Do all dynamic replacements
+  // --- Fill in placeholders ---
   String wifi_status_str = (WiFi.status() == WL_CONNECTED) ? "CONNECTED (" + WiFi.SSID() + " / " + WiFi.localIP().toString() + ")" : "DISCONNECTED";
   html.replace("{{WIFI_STATUS_CLASS}}", (WiFi.status() == WL_CONNECTED ? "connected" : "disconnected"));
   html.replace("{{WIFI_STATUS}}", wifi_status_str);
@@ -537,18 +561,20 @@ void handleRoot() {
   
   html.replace("{{LED_PIN}}", String(LED_DATA_PIN));
   html.replace("{{LED_COUNT}}", String(config.num_leds));
-
+  
   String vled_html = "";
   for(int i=0; i < config.num_leds && i < MAX_LEDS; i++) {
     vled_html += "<div class='vled' style='flex-grow: 1; height: 100%;'></div>";
   }
+  if (config.num_leds == 0) {
+    vled_html = "<div style='flex-grow: 1; height: 100%; text-align: center; color: #888; padding-top: 5px; font-size: 0.9em;'>LEDs disabled</div>";
+  }
   html.replace("{{VIRTUAL_LEDS}}", vled_html);
   
-  // Send the processed string
   server.send(200, "text/html", html);
 }
 
-
+// --- New function to create the JSON (Suggestion 3) ---
 void createStatusJson(DynamicJsonDocument& doc) {
   doc["mqtt_connected"] = client.connected();
 
@@ -595,7 +621,9 @@ void createStatusJson(DynamicJsonDocument& doc) {
           current_color_val = config.led_color_finish;
           current_bright_val = config.led_bright_finish;
       } else {
-          // Idle color will be picked by default
+          // If timeout is done, use idle color
+          current_color_val = config.led_color_idle;
+          current_bright_val = config.led_bright_idle;
       }
   } else if (current_print_percentage > 0 && current_gcode_state != "IDLE") {
       current_color_val = config.led_color_print;
@@ -613,11 +641,11 @@ void createStatusJson(DynamicJsonDocument& doc) {
     led_status_class = "disconnected";
   }
   else if (current_error_state) {
-    led_status_str = "Error (Red)";
+    led_status_str = "Error (Blinking Red)";
     led_status_class = "error";
   }
   else if (current_gcode_state == "PAUSED") {
-    led_status_str = "Paused (Orange)";
+    led_status_str = "Paused (Pulsing Orange)";
     led_status_class = "warning";
   }
   else if (current_gcode_state == "FINISH") {
@@ -637,24 +665,14 @@ void createStatusJson(DynamicJsonDocument& doc) {
     led_status_class = "warning";
   }
   else {
-    led_status_str = "Idle/Off (No Light)";
+    led_status_str = "Idle/Off";
     led_status_class = "light-on";
   }
   doc["led_status_str"] = led_status_str;
   doc["led_status_class"] = led_status_class;
 }
 
-
-void handleStatusJson() {
-  DynamicJsonDocument doc(1024);
-  createStatusJson(doc); // Call the new function
-  
-  String json_output;
-  serializeJson(doc, json_output);
-  server.send(200, "application/json", json_output);
-}
-
-
+// --- New function to broadcast to WebSockets (Suggestion 3) ---
 void broadcastWebSocketStatus() {
   DynamicJsonDocument doc(1024);
   createStatusJson(doc); // Create the JSON
@@ -666,41 +684,55 @@ void broadcastWebSocketStatus() {
   webSocket.broadcastTXT(json_output);
 }
 
+// --- Updated HTTP handler (Suggestion 3) ---
+void handleStatusJson() {
+  DynamicJsonDocument doc(1024);
+  createStatusJson(doc); // Call the new function
+  
+  String json_output;
+  serializeJson(doc, json_output);
+  server.send(200, "application/json", json_output);
+}
+
 void handleMqttJson() {
   Serial.println("Web Request: /mqtt (View JSON History)");
   
   String html = FPSTR(PAGE_MQTT);
   html.replace("{{MSG_COUNT}}", String(mqtt_history.size()));
-  html.replace("{{MAX_HISTORY_SIZE}}", String(MAX_HISTORY_SIZE));
+  html.replace("{{MAX_COUNT}}", String(MAX_HISTORY_SIZE));
   
-  String history_html = "";
+  String log_html = "";
   if(mqtt_history.empty()) {
-    history_html = "No data received yet.";
+    log_html = "No data received yet.";
   } else {
-    for(auto it = mqtt_history.begin(); it != mqtt_history.end(); ++it) {
-      String msg = *it;
+    // --- Updated for Highlighted Log ---
+    for(const auto& entry : mqtt_history) {
+      String msg = entry.message;
       msg.replace("<", "&lt;");
       msg.replace(">", "&gt;");
-      history_html += msg + "\n";
+      if(entry.highlight) {
+        log_html += "<span class='highlight'>" + msg + "</span>\n";
+      } else {
+        log_html += msg + "\n";
+      }
     }
   }
-  html.replace("{{MQTT_HISTORY}}", history_html);
+  html.replace("{{MQTT_LOGS}}", log_html);
 
   server.send(200, "text/html", html);
 }
-
 
 void handleLightOn() {
   Serial.println("Web Request: /light/on");
   manual_light_control = true;
   setChamberLightState(true);
   
-  if (server.client().localIP() == 0) { // Check if this is a WebSocket call (no client IP)
-      broadcastWebSocketStatus(); // Send update to all clients
-  } else {
-      server.sendHeader("Location", "/");
-      server.send(302, "text/plain", "");
+  if (server.client().remoteIP().toString() != "") {
+    // Request came from HTTP
+    server.sendHeader("Location", "/");
+    server.send(302, "text/plain", "");
   }
+  // This will be broadcast by the WebSocket handler in the .ino
 }
 
 void handleLightOff() {
@@ -708,12 +740,11 @@ void handleLightOff() {
   manual_light_control = true;
   setChamberLightState(false);
   
-  if (server.client().localIP() == 0) {
-      broadcastWebSocketStatus();
-  } else {
-      server.sendHeader("Location", "/");
-      server.send(302, "text/plain", "");
+  if (server.client().remoteIP().toString() != "") {
+    server.sendHeader("Location", "/");
+    server.send(302, "text/plain", "");
   }
+  // This will be broadcast by the WebSocket handler in the .ino
 }
 
 void handleLightAuto() {
@@ -731,17 +762,24 @@ void handleLightAuto() {
   }
   setChamberLightState(finalLightState);
 
-  if (server.client().localIP() == 0) {
-      broadcastWebSocketStatus();
-  } else {
-      server.sendHeader("Location", "/");
-      server.send(302, "text/plain", "");
+  if (server.client().remoteIP().toString() != "") {
+    server.sendHeader("Location", "/");
+    server.send(302, "text/plain", "");
   }
+  // This will be broadcast by the WebSocket handler in the .ino
 }
 
 void handleConfig() {
   if (server.method() == HTTP_POST) {
     Serial.println("Web Request: POST /config - Saving settings...");
+    
+    // --- DEBUGGING ---
+    Serial.println("--- FORM ARGUMENTS RECEIVED ---");
+    for (uint8_t i = 0; i < server.args(); i++) {
+      Serial.printf("ARG[%d]: %s = %s\n", i, server.argName(i).c_str(), server.arg(i).c_str());
+    }
+    Serial.println("---------------------------------");
+    // --- END DEBUGGING ---
 
     Config tempConfig = config;
 
@@ -764,15 +802,31 @@ void handleConfig() {
     if (server.hasArg("chamber_bright")) tempConfig.chamber_pwm_brightness = constrain(server.arg("chamber_bright").toInt(), 0, 100);
     tempConfig.chamber_light_finish_timeout = server.hasArg("chamber_timeout");
 
+
+    // --- MODIFIED FOR DEBUGGING ---
     if (server.hasArg("numleds")) {
-      int tempNumLeds = server.arg("numleds").toInt();
-      if (tempNumLeds >= 0 && tempNumLeds <= MAX_LEDS) {
+      Serial.println("Found 'numleds' argument.");
+      String numLedsStr = server.arg("numleds");
+      Serial.printf("'numleds' value as string: '%s'\n", numLedsStr.c_str());
+      int tempNumLeds = numLedsStr.toInt();
+      Serial.printf("'numleds' value as int: %d\n", tempNumLeds);
+      
+      if (numLedsStr.length() > 0 && tempNumLeds >= 0 && tempNumLeds <= MAX_LEDS) {
+          Serial.printf("Setting num_leds to %d\n", tempNumLeds);
           tempConfig.num_leds = tempNumLeds;
+      } else if (numLedsStr.length() == 0) {
+          Serial.println("WARNING: 'numleds' was empty string. Retaining previous value.");
+          // Do nothing, retain config.num_leds
       } else {
-          Serial.printf("WARNING: Invalid LED count (%d). Setting to 0.\n", tempNumLeds);
-          tempConfig.num_leds = 0;
+          Serial.printf("WARNING: Invalid LED count (%d). Retaining previous value.\n", tempNumLeds);
+          // Do nothing, retain config.num_leds
       }
+    } else {
+      Serial.println("WARNING: 'numleds' argument was NOT found. Retaining previous value.");
+      // Do nothing, retain config.num_leds
     }
+    // --- END MODIFICATION ---
+
     tempConfig.led_finish_timeout = server.hasArg("led_finish_timeout");
     if (server.hasArg("led_color_order")) strlcpy(tempConfig.led_color_order, server.arg("led_color_order").c_str(), sizeof(tempConfig.led_color_order));
 
@@ -789,6 +843,7 @@ void handleConfig() {
     if (server.hasArg("finish_bright")) tempConfig.led_bright_finish = constrain(server.arg("finish_bright").toInt(), 0, 255);
 
     config = tempConfig;
+    Serial.printf("Saving config with num_leds = %d\n", config.num_leds);
     saveConfig();
 
     String html = "<!DOCTYPE html><html><head><title>Saving...</title>";
@@ -801,6 +856,7 @@ void handleConfig() {
   }
   else {
     Serial.println("Web Request: GET /config - Showing settings page...");
+    Serial.printf("Current config.num_leds = %d\n", config.num_leds);
     
     String html = FPSTR(PAGE_CONFIG);
 
@@ -808,46 +864,45 @@ void handleConfig() {
     html.replace("{{BBL_SERIAL}}", String(config.bbl_serial));
     html.replace("{{BBL_CODE}}", String(config.bbl_access_code));
     html.replace("{{NTP_SERVER}}", String(config.ntp_server));
-    html.replace("{{TIMEZONE_DROPDOWN}}", getTimezoneDropdown(String(config.timezone)));
+    html.replace("{{TZ_DROPDOWN}}", getTimezoneDropdown(String(config.timezone)));
     html.replace("{{LIGHT_PIN}}", String(config.chamber_light_pin));
     html.replace("{{CHAMBER_BRIGHT}}", String(config.chamber_pwm_brightness));
-    html.replace("{{INVERT_CHECKED}}", (config.invert_output ? "checked" : ""));
-    html.replace("{{CHAMBER_TIMEOUT_CHECKED}}", (config.chamber_light_finish_timeout ? "checked" : ""));
-    
+    html.replace("{{INVERT_CHECK}}", (config.invert_output ? "checked" : ""));
+    html.replace("{{CHAMBER_TIMEOUT_CHECK}}", (config.chamber_light_finish_timeout ? "checked" : ""));
     html.replace("{{MAX_LEDS}}", String(MAX_LEDS));
     html.replace("{{NUM_LEDS}}", String(config.num_leds));
     html.replace("{{LED_ORDER_DROPDOWN}}", getLedOrderDropdown(String(config.led_color_order)));
-    html.replace("{{LED_DATA_PIN}}", String(LED_DATA_PIN));
-    html.replace("{{LED_TIMEOUT_CHECKED}}", (config.led_finish_timeout ? "checked" : ""));
+    html.replace("{{LED_PIN}}", String(LED_DATA_PIN));
+    html.replace("{{LED_TIMEOUT_CHECK}}", (config.led_finish_timeout ? "checked" : ""));
 
-    String vled_html = "";
+    String vled_preview_html = "";
     for(int i=0; i < config.num_leds && i < MAX_LEDS; i++) {
-      vled_html += "<div class='vled' style='flex-grow: 1; height: 100%;'></div>";
+      vled_preview_html += "<div class='vled' style='flex-grow: 1; height: 100%;'></div>";
     }
     if (config.num_leds == 0) {
-       vled_html += "<div style='flex-grow: 1; height: 100%; text-align: center; color: #888; padding-top: 5px; font-size: 0.9em;'>LEDs disabled (set count > 0)</div>";
+       vled_preview_html = "<div style='flex-grow: 1; height: 100%; text-align: center; color: #888; padding-top: 5px; font-size: 0.9em;'>LEDs disabled</div>";
     }
-    html.replace("{{VIRTUAL_LEDS}}", vled_html);
-
-    char hex[7];
-    snprintf(hex, 7, "%06X", config.led_color_idle);
-    html.replace("{{IDLE_COLOR}}", String(hex));
+    html.replace("{{VLED_PREVIEW}}", vled_preview_html);
+    
+    char hexColor[7];
+    snprintf(hexColor, 7, "%06X", config.led_color_idle);
+    html.replace("{{IDLE_COLOR}}", String(hexColor));
     html.replace("{{IDLE_BRIGHT}}", String(config.led_bright_idle));
-
-    snprintf(hex, 7, "%06X", config.led_color_print);
-    html.replace("{{PRINT_COLOR}}", String(hex));
+    
+    snprintf(hexColor, 7, "%06X", config.led_color_print);
+    html.replace("{{PRINT_COLOR}}", String(hexColor));
     html.replace("{{PRINT_BRIGHT}}", String(config.led_bright_print));
 
-    snprintf(hex, 7, "%06X", config.led_color_pause);
-    html.replace("{{PAUSE_COLOR}}", String(hex));
+    snprintf(hexColor, 7, "%06X", config.led_color_pause);
+    html.replace("{{PAUSE_COLOR}}", String(hexColor));
     html.replace("{{PAUSE_BRIGHT}}", String(config.led_bright_pause));
-
-    snprintf(hex, 7, "%06X", config.led_color_error);
-    html.replace("{{ERROR_COLOR}}", String(hex));
+    
+    snprintf(hexColor, 7, "%06X", config.led_color_error);
+    html.replace("{{ERROR_COLOR}}", String(hexColor));
     html.replace("{{ERROR_BRIGHT}}", String(config.led_bright_error));
-
-    snprintf(hex, 7, "%06X", config.led_color_finish);
-    html.replace("{{FINISH_COLOR}}", String(hex));
+    
+    snprintf(hexColor, 7, "%06X", config.led_color_finish);
+    html.replace("{{FINISH_COLOR}}", String(hexColor));
     html.replace("{{FINISH_BRIGHT}}", String(config.led_bright_finish));
 
     server.send(200, "text/html", html);
@@ -868,7 +923,7 @@ void handleBackup() {
 
 void handleRestorePage() {
   Serial.println("Web Request: GET /restore");
-  server.send(200, "text/html", FPSTR(PAGE_RESTORE));
+  server.send_P(200, "text/html", PAGE_RESTORE);
 }
 
 void handleRestoreUpload() {

@@ -99,13 +99,17 @@ bool loadConfig() {
       configFile.close();
       return false;
   }
-  if (size > 2048) {
+  if (size > JSON_DOC_SIZE) { // <-- Check against the constant
     Serial.println("Config file size is too large");
     configFile.close();
     return false;
   }
 
-  DynamicJsonDocument doc(2048);
+  // --- FIX 1 ---
+  // Use the larger JSON_DOC_SIZE constant
+  DynamicJsonDocument doc(JSON_DOC_SIZE);
+  // --- END FIX ---
+  
   DeserializationError error = deserializeJson(doc, configFile);
   configFile.close();
 
@@ -158,7 +162,12 @@ bool loadConfig() {
 
 bool saveConfig() {
   Serial.println("Saving configuration to LittleFS...");
-  DynamicJsonDocument doc(2048);
+  
+  // --- FIX 2 ---
+  // Use the larger JSON_DOC_SIZE constant
+  DynamicJsonDocument doc(JSON_DOC_SIZE);
+  // --- END FIX ---
+
   doc["bbl_ip"] = config.bbl_ip;
   doc["bbl_serial"] = config.bbl_serial;
   doc["bbl_access_code"] = config.bbl_access_code;
@@ -208,6 +217,8 @@ void setupDefaultConfig() {
   strcpy(config.ntp_server, "pool.ntp.org");
   strcpy(config.timezone, "GMT0BST,M3.5.0/1,M10.5.0");
   strcpy(config.led_color_order, "GRB");
+  // We should also set a default for num_leds here
+  config.num_leds = DEFAULT_NUM_LEDS; 
 }
 
 void applyConfigFixes() {
@@ -225,6 +236,7 @@ void printConfig() {
   Serial.print("NTP Server: "); Serial.println(config.ntp_server);
   Serial.print("Timezone: "); Serial.println(config.timezone);
   Serial.print("LED Color Order: "); Serial.println(config.led_color_order);
+  Serial.print("Num LEDs: "); Serial.println(config.num_leds);
   Serial.println("------------------------------");
 }
 
@@ -329,8 +341,6 @@ bool isValidGpioPin(int pin) {
     if (pin >= 6 && pin <= 11) return false; // SPI Flash
     if (pin >= 34) return false; // Input-only
     
-    // --- FIX 5 ---
-    // Add checks to prevent pin conflicts with other hardware
     if (pin == LED_DATA_PIN) {
         Serial.printf("Pin %d is reserved for LED Data.\n", LED_DATA_PIN);
         return false;
@@ -339,7 +349,6 @@ bool isValidGpioPin(int pin) {
         Serial.printf("Pin %d is reserved for Factory Reset.\n", FORCE_RESET_PIN);
         return false;
     }
-    // --- END FIX 5 ---
 
     return true;
 }

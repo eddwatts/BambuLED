@@ -7,7 +7,14 @@
 CRGB leds[MAX_LEDS];
 
 void initLEDStrip() {
-  if (config.num_leds > 0 && config.num_leds <= MAX_LEDS && isValidGpioPin(LED_DATA_PIN)) {
+  // --- FIX ---
+  // Removed the "isValidGpioPin(LED_DATA_PIN)" check.
+  // This check was designed for the *external* light pin and was incorrectly
+  // flagging the (valid) LED_DATA_PIN as a conflict, causing this function
+  // to take the 'else' path and set config.num_leds to 0.
+  if (config.num_leds > 0 && config.num_leds <= MAX_LEDS) {
+  // --- END FIX ---
+  
       Serial.print("Initializing LED strip on Pin ");
       Serial.print(LED_DATA_PIN);
       Serial.print(" with ");
@@ -39,8 +46,8 @@ void initLEDStrip() {
       FastLED.show();
       Serial.println("FastLED OK.");
   } else {
-      Serial.println("WARNING: LED setup skipped due to invalid pin or 0/too many LEDs.");
-      config.num_leds = 0;
+      Serial.println("WARNING: LED setup skipped due to 0 or too many LEDs.");
+      config.num_leds = 0; // This is now correct, it only runs if num_leds is 0 or > MAX_LEDS
   }
 }
 
@@ -52,8 +59,15 @@ void updateLEDs() {
      }
     return;
   }
+  
+  // Only update animations every 16ms (around 60fps)
+  if (millis() - lastAnimationUpdate < 16) {
+    return;
+  }
+  lastAnimationUpdate = millis();
 
-  // --- Animation Logic ---
+
+  // --- Animation Logic from Suggestion 1 ---
 
   if (current_gcode_state == "PAUSED") {
     

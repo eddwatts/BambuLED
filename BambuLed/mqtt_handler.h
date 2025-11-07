@@ -5,11 +5,11 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <deque>
-#include "config.h" // <-- ADDED
+#include "config.h" 
 
 // External declarations from main file
 extern PubSubClient client;
-extern WiFiClientSecure espClient; // <-- ADDED
+extern WiFiClientSecure espClient; 
 extern String mqtt_topic_status;
 extern String current_light_mode;
 extern bool manual_light_control;
@@ -29,11 +29,22 @@ extern unsigned long finishTime;
 extern const unsigned long FINISH_LIGHT_TIMEOUT;
 extern unsigned long lastReconnectAttempt;
 extern const unsigned long RECONNECT_INTERVAL;
-extern Config config; // <-- ADDED
+extern Config config; 
 
-// MQTT History
-extern std::deque<String> mqtt_history;
-const int MAX_HISTORY_SIZE = 100;  // Define it here instead of extern
+// --- FIX for Highlighted Log ---
+// 1. Define a struct to hold the log message and its state
+struct MqttLogEntry {
+  String message;
+  bool highlight;
+};
+
+// 2. Change the deque to use this new struct
+extern std::deque<MqttLogEntry> mqtt_history;
+
+// 3. Set the new history size
+const int MAX_HISTORY_SIZE = 500;  // Increased for 8MB RAM
+// --- END FIX ---
+
 
 // Function declarations
 void setupMQTT();

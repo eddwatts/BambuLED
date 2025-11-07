@@ -5,7 +5,6 @@
 #include <WiFiManager.h>
 #include <FS.h>
 #include <LittleFS.h>
-#include <deque>
 #include <PubSubClient.h>
 #include <FastLED.h>
 #include <ArduinoJson.h> // <-- Include for DynamicJsonDocument
@@ -20,13 +19,14 @@ extern bool external_light_is_on;
 extern String current_light_mode;
 extern String current_gcode_state;
 extern int current_print_percentage;
+extern bool current_error_state;
+extern float current_bed_temp;
+extern float current_nozzle_temp;
+extern float current_bed_target_temp;
+extern float current_nozzle_target_temp;
 extern int current_time_remaining;
 extern int current_layer;
 extern int current_stage;
-extern float current_nozzle_temp;
-extern float current_nozzle_target_temp;
-extern float current_bed_temp;
-extern float current_bed_target_temp;
 extern String current_wifi_signal;
 extern unsigned long finishTime;
 extern const unsigned long FINISH_LIGHT_TIMEOUT;
@@ -34,7 +34,6 @@ extern File restoreFile;
 extern bool restoreSuccess;
 
 // External declarations from other modules
-extern std::deque<String> mqtt_history;
 extern CRGB leds[MAX_LEDS];
 
 // WiFiManager parameter declarations
@@ -76,9 +75,8 @@ void handleRestorePage();
 void handleRestoreUpload();
 void handleRestoreReboot();
 
-// --- FIX: Added missing declarations for WebSocket functions ---
+// --- Declarations for WebSocket functions ---
 void createStatusJson(DynamicJsonDocument& doc);
 void broadcastWebSocketStatus();
-// --- End Fix ---
 
 #endif
