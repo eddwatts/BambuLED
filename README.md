@@ -97,7 +97,7 @@ On its first boot (or after a factory reset), the ESP32 will not find any saved 
 Once connected, you can access the controller by visiting its IP address in a web browser.
 
 ### Status Page (`/`)
-![alt text](https://github.com/eddwatts/BambuLED/blob/bf4384a51684fe2ba9794a04d4fef1aa608faa1a/Screenshot-Status.png "Status Page")
+![alt text](https://github.com/eddwatts/BambuLED/blob/a28694ac57b4b747e026ee08147ecbdc9329c466/Screenshot-Status.png "Status Page")
 
  This is the main dashboard, which auto-refreshes every 3 seconds. It shows:
 *  **Connection Status:** WiFi network, device IP, and MQTT connection status.
